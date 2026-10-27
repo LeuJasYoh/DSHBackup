@@ -1,0 +1,16 @@
+7-Zip source information
+========================
+Version: 26.05 (Extra package, x64 7za.exe)
+Official site: https://www.7-zip.org/
+Download page: https://www.7-zip.org/download.html
+Source code: https://www.7-zip.org/a/7z2605-src.7z (official source package for this version)
+License: GNU LGPL 2.1+ with unRAR restriction; see License.txt.
+
+The bundled executable is unmodified official 7-Zip 26.05 Extra.
+SHA-256 of 7za.exe:
+7ddf0a3bc451e166679296be630d6f0573eb386159c04184761c43020c484291
+
+SHA-256 of official 7z2605-extra.7z:
+f27a8f103c84785026edcba1f67faf1357225df9d19ddb0b7760d55947141bc7
+
+Only the 7z archive format is used. RAR features are not used.

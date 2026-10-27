@@ -1,0 +1,22 @@
+# Build outputs and large local artifacts
+/dist/
+/.compress-test/
+/.tmp-test/
+/dsh-backup-*.zip
+
+# Old one-off backup scripts, superseded by app/DSHBackup
+/Backup-DSH.ps1
+/Restore-DSH.ps1
+
+# Keep the bundled 7-Zip package lean
+/tools/7zip/*.7z
+/tools/7zip/7z2605-extra/*
+!/tools/7zip/7z2605-extra/License.txt
+!/tools/7zip/7z2605-extra/x64/
+/tools/7zip/7z2605-extra/x64/*
+!/tools/7zip/7z2605-extra/x64/7za.exe
+
+*.log
+
+# GitHub release metadata downloaded for verification
+/tools/7zip/release-*.json

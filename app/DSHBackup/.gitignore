@@ -1,0 +1,11 @@
+build/bin
+node_modules
+frontend/dist/*
+!frontend/dist/.gitkeep
+frontend/wailsjs
+frontend/package.json.md5
+sidecar/target
+data
+backups
+.tmp-test
+*.log

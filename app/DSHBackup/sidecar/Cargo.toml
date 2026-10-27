@@ -1,0 +1,22 @@
+[package]
+name = "dsh-backup-core"
+version = "1.0.0"
+edition = "2021"
+description = "DSH Backup low-level sidecar"
+
+[dependencies]
+age = { version = "0.11", default-features = false }
+base64 = "0.22"
+filetime = "0.2"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+walkdir = "2"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "s"
+panic = "abort"

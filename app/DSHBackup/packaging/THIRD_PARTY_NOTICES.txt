@@ -1,0 +1,47 @@
+DSH Backup 第三方组件与许可证说明
+=================================
+
+1. 7-Zip 26.05 Extra (x64)
+   - 随包文件：tools\7za.exe、tools\7za.dll、tools\7zxa.dll、tools\License.txt
+   - 许可证：GNU LGPL 2.1+；unRAR 代码有额外限制。
+   - 本项目只使用 7z 格式压缩/解压，不使用 RAR 功能，不静态链接 7-Zip。
+   - 官方源码与下载：https://www.7-zip.org/
+   - 7za.exe SHA-256：
+     7ddf0a3bc451e166679296be630d6f0573eb386159c04184761c43020c484291
+   - 发行包 SHA-256（7z2605-extra.7z）：
+     f27a8f103c84785026edcba1f67faf1357225df9d19ddb0b7760d55947141bc7
+   - 许可证全文见同目录 License.txt。如需 7-Zip 源码，请从官网获取对应版本源码包。
+
+2. age (Rust crate, age 0.11.x)
+   - 用途：X25519 公钥封装归档密码；不用于 7z 归档内容加密。
+   - 许可证：MIT OR Apache-2.0。
+   - 源码：https://github.com/str4d/age
+   - 本项目通过 Cargo 依赖静态链接；不修改 age 源码。
+
+3. Rust 依赖
+   - serde / serde_json：MIT OR Apache-2.0
+   - sha2：MIT OR Apache-2.0
+   - base64：MIT OR Apache-2.0
+   - walkdir：Unlicense OR MIT
+   - filetime：MIT OR Apache-2.0
+   - hex：MIT OR Apache-2.0
+   源码与版本记录见 sidecar\Cargo.lock（开发源码树）。
+
+4. Go 依赖
+   - Wails v2：MIT
+   - golang.org/x/sys：BSD-3-Clause
+   - github.com/danieljoos/wincred：MIT
+   其余间接依赖的许可证见 Go module 源码树。
+
+5. 前端依赖
+   - Vue 3：MIT
+   - Vite：MIT
+   - TypeScript：Apache-2.0
+
+6. 本项目代码
+   - 内部构建，未声明开源许可证；未经授权不得再分发。
+   - 本项目不包含或分发 DSH 的私有代码。
+
+安全更新
+--------
+7-Zip 固定为 26.05，并在启动时校验内置 7za.exe 的 SHA-256。更新 7-Zip 时应同步更新校验值并重新验证压缩/解压兼容性。请关注 7-Zip 的安全公告。
