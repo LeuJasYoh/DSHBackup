@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { go, isBusy, openBackupFolder, startBackup, store } from "../store";
 import { taskTitle } from "../lib/format";
 
@@ -7,10 +7,24 @@ defineEmits<{ help: [] }>();
 
 const taskPercent = computed(() => Math.round(store.task?.percent ?? 0));
 const backupLabel = computed(() => store.startingTask ? "正在启动…" : store.task?.kind === "backup" ? "备份中…" : "立即备份");
+
+// 只有页级滚动容器会把内容送到这条栏下面；设置页滚的是内层列表，栏下没有东西经过。
+const scrolled = ref(false);
+let pageScroller: HTMLElement | null = null;
+function onScroll(event: Event) {
+  if (event.target !== pageScroller) return;
+  scrolled.value = (event.target as HTMLElement).scrollTop > 8;
+}
+onMounted(() => {
+  pageScroller = document.getElementById("content");
+  document.addEventListener("scroll", onScroll, true);
+});
+onUnmounted(() => document.removeEventListener("scroll", onScroll, true));
+watch(() => store.page, () => { scrolled.value = false; });
 </script>
 
 <template>
-  <header class="topbar">
+  <header class="topbar" :class="{ 'is-scrolled': scrolled }">
     <div class="top-actions">
       <button v-if="store.startingTask || store.task" class="task-pill" type="button" title="回到总览查看进度" @click="go('dashboard')">
         <span class="spinner"></span>

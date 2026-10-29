@@ -165,7 +165,6 @@ onUnmounted(dispose);
     <div class="app-shell">
       <SidebarNav />
       <main class="main">
-        <TopBar @help="store.modals.help = true" />
         <div v-if="store.update?.available && !store.updateDismissed" class="shell-notice update-notice" role="status">
           <span class="update-copy"><svg class="icon"><use href="#i-export"></use></svg>发现新版本 v{{ store.update.latestVersion }}<span class="update-current">当前 v{{ store.update.currentVersion }}</span></span>
           <span class="update-actions"><button class="text-button" @click="openReleasePage()">查看发行版</button><button class="icon-btn" type="button" aria-label="关闭更新提示" @click="dismissUpdate"><svg class="icon"><use href="#i-x"></use></svg></button></span>
@@ -173,6 +172,7 @@ onUnmounted(dispose);
         <div v-if="store.settingsReminder && store.settingsDirty && store.page !== 'settings'" class="shell-notice" role="status"><span>{{ store.settingsReminder }}</span><button class="text-button" @click="go('settings')">返回设置</button></div>
         <div v-if="store.bootError" class="shell-notice error" role="alert"><span>状态刷新失败，当前显示上次读取的数据：{{ store.bootError }}</span><button class="text-button" :disabled="store.refreshing" @click="retryLoad()">重试刷新</button></div>
         <div class="content" id="content">
+          <TopBar @help="store.modals.help = true" />
           <DashboardView />
           <HistoryView />
           <SettingsView />

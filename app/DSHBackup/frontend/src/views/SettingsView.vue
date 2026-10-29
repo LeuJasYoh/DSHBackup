@@ -27,6 +27,7 @@ const logTail = ref("");
 const toolBusy = ref(false);
 const toolMessage = ref("");
 const toolFailure = ref("");
+const advancedOpen = ref(false);
 const locked = computed(() => isBusy.value || browsing.value);
 const dirty = computed(() => !!draft.value && configFingerprint(draft.value, extraArgsText.value) !== baseline.value);
 const argsError = computed(() => extraArgsError(extraArgsText.value));
@@ -172,17 +173,22 @@ function setRetention(delta: number) {
               </div>
             </div>
             <div class="setting-advanced">
-              <details class="advanced-block">
-                <summary>高级压缩参数</summary>
-                <div class="advanced-grid">
-                  <label>字典大小
-                    <select v-model.number="draft.compression.dictionaryMb" class="text-input select-input"><option :value="0">自动</option><option v-for="size in [16, 32, 64, 128, 256, 512, 1024]" :key="size" :value="size">{{ size }} MB</option></select>
-                  </label>
-                  <label>线程数（0 为自动）<input v-model.number="draft.compression.threads" type="number" min="0" max="64" class="text-input" /></label>
-                  <label class="advanced-wide">自定义参数<input v-model="extraArgsText" class="text-input mono" placeholder="例如 -mfb=273 -ms=on" :aria-invalid="!!argsError" aria-describedby="argsHint" /></label>
+              <button class="disc-head" type="button" :aria-expanded="advancedOpen" aria-controls="advancedFields" @click="advancedOpen = !advancedOpen">
+                <svg class="chev" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
+                高级压缩参数
+              </button>
+              <div id="advancedFields" class="disc-body" :class="{ open: advancedOpen }">
+                <div>
+                  <div class="advanced-grid">
+                    <label>字典大小
+                      <select v-model.number="draft.compression.dictionaryMb" class="text-input select-input"><option :value="0">自动</option><option v-for="size in [16, 32, 64, 128, 256, 512, 1024]" :key="size" :value="size">{{ size }} MB</option></select>
+                    </label>
+                    <label>线程数（0 为自动）<input v-model.number="draft.compression.threads" type="number" min="0" max="64" class="text-input" /></label>
+                    <label class="advanced-wide">自定义参数<input v-model="extraArgsText" class="text-input mono" placeholder="例如 -mfb=273 -ms=on" :aria-invalid="!!argsError" aria-describedby="argsHint" /></label>
+                  </div>
+                  <p id="argsHint" class="hint" :class="{ error: argsError }">{{ argsError || '仅接受 -mx、-md、-mmt、-mfb、-ms、-mqs 白名单参数，不经过 shell。' }}</p>
                 </div>
-                <p id="argsHint" class="hint" :class="{ error: argsError }">{{ argsError || '仅接受 -mx、-md、-mmt、-mfb、-ms、-mqs 白名单参数，不经过 shell。' }}</p>
-              </details>
+              </div>
             </div>
           </section>
 

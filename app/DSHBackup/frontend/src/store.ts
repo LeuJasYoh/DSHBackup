@@ -13,8 +13,9 @@ export interface ConfirmState {
   danger?: boolean;
   onConfirm: () => void | Promise<void>;
 }
-export interface ToastState { text: string; type: "info" | "success" | "warning" | "error" }
-const emptyToast: ToastState = { text: "", type: "info" };
+export interface ToastAction { label: string; run: () => void }
+export interface ToastState { text: string; type: "info" | "success" | "warning" | "error"; action: ToastAction | null }
+const emptyToast: ToastState = { text: "", type: "info", action: null };
 export const store = reactive({
   ready: false,
   boot: null as Bootstrap | null,
@@ -52,10 +53,10 @@ export const totalSourceBytes = computed(() => store.boot?.dsh.sources.reduce((s
 export const totalSourceFiles = computed(() => store.boot?.dsh.sources.reduce((sum, source) => sum + (source.exists ? source.files : 0), 0) ?? 0);
 export const localUsage = computed(() => store.boot?.localSnapshots.reduce((sum, snapshot) => sum + snapshot.size, 0) ?? 0);
 
-export function showToast(text: string, type: ToastState["type"] = "info", duration = 3200) {
+export function showToast(text: string, type: ToastState["type"] = "info", duration = 3200, action: ToastAction | null = null) {
   if (!text) return;
   if (store.toastTimer) clearTimeout(store.toastTimer);
-  store.toast = { text, type };
+  store.toast = { text, type, action };
   store.toastTimer = setTimeout(dismissToast, duration);
 }
 export function dismissToast() {
@@ -156,6 +157,8 @@ export function dispose() {
   store.unsubscribes.forEach((off) => off());
   store.unsubscribes = [];
   if (store.refreshTimer) clearTimeout(store.refreshTimer);
+  if (pendingDelete) clearTimeout(pendingDelete.timer);
+  pendingDelete = null;
   dismissToast();
 }
 export function go(page: Page) {
@@ -289,17 +292,57 @@ export async function checkDSH(notify = true) {
     if (notify) showToast(status.running ? "检测到 DSH 正在运行" : "未检测到正在运行的 DSH", status.running ? "warning" : "success");
   } catch (error) { showToast(errorMessage(error), "error"); }
 }
+// 删除可撤销：先从列表移出，6 秒后才真正删文件。窗口内关闭应用不会删除任何东西。
+const UNDO_WINDOW = 6000;
+let pendingDelete: { snapshot: Snapshot; timer: ReturnType<typeof setTimeout> } | null = null;
+
+function detachSnapshot(id: string): Snapshot | null {
+  const list = store.boot?.localSnapshots;
+  if (!list) return null;
+  const index = list.findIndex((item) => item.id === id);
+  if (index < 0) return null;
+  return list.splice(index, 1)[0];
+}
+function attachSnapshot(snapshot: Snapshot) {
+  store.boot?.localSnapshots.push(snapshot);
+}
+
+async function commitPendingDelete() {
+  if (!pendingDelete) return;
+  const { snapshot, timer } = pendingDelete;
+  clearTimeout(timer);
+  pendingDelete = null;
+  if (isBusy.value) {
+    attachSnapshot(snapshot);
+    showToast("有任务正在进行，已跳过这次删除", "warning");
+    return;
+  }
+  try {
+    await api.deleteLocalSnapshot(snapshot.id);
+    await refresh();
+    if (store.bootError) { showToast(`已删除，但列表刷新失败：${store.bootError}`, "warning"); return; }
+    showToast("备份已删除，原数据不受影响", "success");
+  } catch (error) {
+    await refresh();
+    showToast(errorMessage(error), "error");
+  }
+}
+
 export function deleteSnapshot(snapshot: Snapshot) {
   if (isBusy.value) return;
-  askConfirm({
-    title: "删除这份备份？", message: `将删除备份 ${snapshot.id} 的归档及清单，不会删除或修改 DSH 原数据。`,
-    detail: "删除后无法撤销。归档缺失时，仅删除残留的备份清单。", confirmLabel: "删除备份", danger: true,
-    onConfirm: async () => {
-      if (isBusy.value) throw new Error("任务进行中，请等待完成后删除。");
-      await api.deleteLocalSnapshot(snapshot.id);
-      await refresh();
-      if (store.bootError) throw new Error(`删除请求已完成，但列表刷新失败：${store.bootError}。请关闭此窗口并刷新历史列表。`);
-      showToast("备份已删除，原数据不受影响", "success");
+  if (pendingDelete) void commitPendingDelete();
+  const removed = detachSnapshot(snapshot.id) ?? snapshot;
+  const name = removed.localPath?.split(/[\\/]/).pop() || `dsh-backup-${removed.id}.7z`;
+  pendingDelete = { snapshot: removed, timer: setTimeout(() => { void commitPendingDelete(); }, UNDO_WINDOW) };
+  showToast(`已删除 ${name}`, "info", UNDO_WINDOW, {
+    label: "撤销",
+    run: () => {
+      if (!pendingDelete) return;
+      clearTimeout(pendingDelete.timer);
+      attachSnapshot(pendingDelete.snapshot);
+      pendingDelete = null;
+      dismissToast();
+      showToast("已撤销，归档仍在原处", "info");
     },
   });
 }

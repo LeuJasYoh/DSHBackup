@@ -1085,3 +1085,65 @@ app\DSHBackup\
 - 浏览器 mock 亮/暗两主题下总览、归档历史、设置三个分类、恢复弹窗、引导流程逐屏截图；
   备份完成后的结果卡、数字刷新、图表与 toast 均正常；除路径单元格的省略号截断外无横向溢出
 - 未修改真实 `%USERPROFILE%\.dsh`；未提交、未打包发布
+
+## 25. 交互层：六条实测模式落地（工作区，未发布）
+
+上一轮只搬了配色和排版。这一轮先实测官网的**行为**，再逐条移植；每条都能对应到一个具体的别扭点。
+
+### 25.1 实测依据
+
+| 行为 | 实测值 |
+| --- | --- |
+| 顶栏滚动状态 | 顶部时 `background: rgba(0,0,0,0)`、`border-color: transparent`、`backdrop-filter: none`；滚动后 `rgba(255,255,255,.45)` + `1px rgba(0,0,0,.1)` + `blur(12px)`，过渡 `background-color, border-color, backdrop-filter / .3s` |
+| 展开收起 | 移动端下载面板 `transition: grid-template-rows .18s ease, visibility .18s` |
+| 复制入口 | `复制` = `12px/400`、`rgba(255,255,255,.5)`、无边框无底色，紧贴 `<pre>` |
+| 进场 | `translateY(30px)` + 淡入，错峰 `.4s`；`prefers-reduced-motion` 下运行中动画归零、进场元素强制 `opacity:1` |
+| 常驻演示 | harness 页 159 个动画在跑，`11000 / 15000 / 17500 / 22000 ms` 无限循环，配 28×28 暂停键 |
+| toast | `bottom` 常驻，`opacity/transform .2s`，语义色只有 success / warning / error 三种细边框 |
+
+### 25.2 应用内改动
+
+1. **滚动玻璃栏**：`TopBar` 移入 `#content` 滚动容器，成为 `position: sticky; top: 0`，
+   内容从它下面经过；用 document 捕获阶段的 scroll 监听（scroll 不冒泡）切换 `.is-scrolled`，
+   加上 `background: color-mix(--bg 84%, transparent)` + `border-bottom: 1px solid var(--border)` + `blur(12px)`。
+   只响应页级滚动容器——设置页滚的是内层列表，栏下没有内容经过，那里不加玻璃，避免"假状态"。
+   为此 `.content` 改为 flex 纵向、`.page` 为 `flex: 0 0 auto`、`.settings-page.active` 去掉 `height: 100%`。
+2. **平滑展开**：设置页「高级压缩参数」从原生 `<details>` 换成 `button[aria-expanded]` +
+   `grid-template-rows: 0fr → 1fr` 的 `.disc-body`，`.18s`，箭头同步旋转 90°。
+3. **路径复制**：新增 `CopyButton.vue`，静止 `opacity: 0`，鼠标进入所在行才出现，
+   点击后变成「已复制」1.5 秒并弹 toast。接入总览的保护范围两行、页脚备份目录。
+   新增 `.path-row` 承载「单行省略 + 复制」，`.copy-btn.done` 保持可见。
+4. **数字交叉淡入**：新增 `AnimatedValue.vue`，用 Web Animations API 做
+   `130ms 淡出上移 4px → 换值 → 170ms 从下 4px 淡入`，带 token 防止快速连续更新丢帧，
+   `prefers-reduced-motion` 下直接换值。总览五个数字全部接入。
+5. **步骤轨迹**：`ProgressCard` 从"一条进度条 + 一行小圆点"改为纵向轨迹：
+   每步一行，当前步骤用 `grid-template-rows` 就地展开后端返回的 `message`，
+   完成后收起并显示该步耗时（时间戳由界面自己记录，后端不提供每步用时）。
+   进度条保留为 2px 细线，百分比仍在头部。
+6. **撤销删除**：`deleteSnapshot` 不再弹确认框。先从 `localSnapshots` 里摘掉（列表和数字立即更新），
+   6 秒后才调用 `DeleteLocalSnapshot`；toast 里给「撤销」，撤销则把快照放回并清掉定时器。
+   期间若有关闭应用（`dispose` 清定时器）或开始其他任务（`isBusy` 时跳过并放回），文件都不会被删除，
+   属于失败即不删的方向。恢复覆盖这种不可逆操作仍然用确认弹窗。
+   `ToastState` 因此增加可选的 `action`，`ToastHost` 渲染操作按钮。
+
+### 25.3 验证
+
+- `npm run build`（`vue-tsc`）与 `go vet ./...`、`go test ./...` 通过
+- 浏览器 mock 亮/暗两套，按计算样式与 DOM 状态逐条核对：
+  玻璃栏 `rgba(0,0,0,0)/none` → `84% 底色 + blur(12px) + 1px 发丝线`；
+  展开高度 `0 → 146px`、箭头 `rotate(90deg)`、`aria-expanded=true`；
+  复制按钮 `opacity 0 → 1` 并弹出「已复制到剪贴板」；
+  备份后首个数字 `192.9 MB → 257.2 MB`；
+  轨迹 6 步、当前步展开、已完成步显示耗时；
+  删除后列表 8 → 6 行、toast 带「撤销」、撤销后回到 8 行
+- 1080×700 与 960×760 无横向溢出
+- `wails build` 后启动真实 exe：真实备份（96.1 MB / 521 文件）过程中轨迹正确推进
+  （检查 1 秒内、暂存 2 秒、压缩 22 秒并在下方显示「处理中」），完成后数字、结果卡、图表同步更新；
+  滚动页面顶栏保持在顶部并浮出发丝线
+- 未修改真实 `%USERPROFILE%\.dsh`；未提交、未打包发布
+
+### 25.4 没有搬的三条
+
+- **逐块滚动揭示**：官网每块进视口 `translateY(30px)` + 淡入，工具里滚一下重放一次会很烦，只在切换页面时保留一次进场
+- **20 秒循环演示**：那是营销页替产品说话的装置，我们的界面本身就是活的
+- **120px 吸顶偏移**：官网文章页左栏 `sticky top:120px` 是给浮动导航留的，我们按实际栏高处理

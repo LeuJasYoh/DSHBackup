@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import AnimatedValue from "../components/AnimatedValue.vue";
+import CopyButton from "../components/CopyButton.vue";
 import ProgressCard from "../components/ProgressCard.vue";
 import SnapshotTable from "../components/SnapshotTable.vue";
 import {
@@ -109,11 +111,11 @@ const weekly = computed(() => {
     </div>
 
     <div class="figures">
-      <div class="fig"><div class="v">{{ formatBytes(localUsage) }}</div><div class="k">归档占用</div></div>
-      <div class="fig"><div class="v">{{ formatBytes(boot.disk.free) }}</div><div class="k">目标盘剩余</div></div>
-      <div class="fig"><div class="v">{{ snapshots.length ? `${readyCount} /${snapshots.length}` : "—" }}</div><div class="k">归档可用</div></div>
-      <div class="fig"><div class="v">{{ latest ? latest.fileCount.toLocaleString() : "—" }}</div><div class="k">最近归档文件数</div></div>
-      <div class="fig"><div class="v">{{ nextValue }}</div><div class="k">下次计划</div></div>
+      <div class="fig"><div class="v"><AnimatedValue :value="formatBytes(localUsage)" /></div><div class="k">归档占用</div></div>
+      <div class="fig"><div class="v"><AnimatedValue :value="formatBytes(boot.disk.free)" /></div><div class="k">目标盘剩余</div></div>
+      <div class="fig"><div class="v"><AnimatedValue :value="snapshots.length ? `${readyCount} /${snapshots.length}` : '—'" /></div><div class="k">归档可用</div></div>
+      <div class="fig"><div class="v"><AnimatedValue :value="latest ? latest.fileCount.toLocaleString() : '—'" /></div><div class="k">最近归档文件数</div></div>
+      <div class="fig"><div class="v"><AnimatedValue :value="nextValue" /></div><div class="k">下次计划</div></div>
     </div>
 
     <div class="dashboard-grid">
@@ -148,14 +150,20 @@ const weekly = computed(() => {
           <div class="rowline">
             <div class="row-main">
               <div class="row-title">DSH 核心数据</div>
-              <div class="row-sub mono" :title="sourceDsh?.path">{{ sourceDsh?.path || "未检测到 DSH 数据目录" }}</div>
+              <div class="path-row copy-host" :title="sourceDsh?.path">
+                <span class="mono">{{ sourceDsh?.path || "未检测到 DSH 数据目录" }}</span>
+                <CopyButton v-if="sourceDsh?.exists" :value="sourceDsh.path" />
+              </div>
             </div>
             <span class="row-meta">{{ sourceDsh?.exists ? formatBytes(sourceDsh.bytes) : "不存在" }}</span>
           </div>
           <div class="rowline">
             <div class="row-main">
               <div class="row-title">桌面登录状态</div>
-              <div class="row-sub mono" :title="sourceDesktop?.path">{{ sourceDesktop?.path || "未检测到桌面登录状态" }}</div>
+              <div class="path-row copy-host" :title="sourceDesktop?.path">
+                <span class="mono">{{ sourceDesktop?.path || "未检测到桌面登录状态" }}</span>
+                <CopyButton v-if="sourceDesktop?.exists" :value="sourceDesktop.path" />
+              </div>
             </div>
             <span class="row-meta">{{ !config.includeDesktop ? "未包含" : sourceDesktop?.exists ? formatBytes(sourceDesktop.bytes) : "不存在" }}</span>
           </div>
@@ -187,7 +195,7 @@ const weekly = computed(() => {
     </div>
 
     <div class="page-foot">
-      <span><svg class="icon"><use href="#i-folder"></use></svg><span class="path-wrap" :title="config.backupDir">备份目录 {{ config.backupDir }} · 可用 {{ formatBytes(boot.disk.free) }}</span></span>
+      <span class="copy-host"><svg class="icon"><use href="#i-folder"></use></svg><span class="path-wrap" :title="config.backupDir">备份目录 {{ config.backupDir }} · 可用 {{ formatBytes(boot.disk.free) }}</span><CopyButton :value="config.backupDir" /></span>
       <span><svg class="icon"><use href="#i-lock"></use></svg>{{ config.encryptionLocal ? "本地加密已开启" : "本地加密未开启" }}<button class="text-button" @click="openSettingsTab('security')">前往设置<svg class="icon" style="width:12px;height:12px"><use href="#i-chevron-right"></use></svg></button></span>
     </div>
   </section>
