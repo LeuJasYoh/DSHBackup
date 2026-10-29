@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { go, store } from "../store";
+import { go, latestSnapshot, openRepository, snapshots, store } from "../store";
+import { formatTime } from "../lib/format";
 
 const sevenZip = computed(() => {
   const version = store.boot?.app.sevenZip.version ?? "";
@@ -8,48 +9,59 @@ const sevenZip = computed(() => {
   return match ? `7z ${match[1]}` : "7z";
 });
 const version = computed(() => store.boot?.app.version ?? "1.1.0");
+const platform = computed(() => {
+  const value = store.boot?.app.platform ?? "";
+  return value.startsWith("windows") ? "Windows x64" : value || "Windows x64";
+});
+const lastBackup = computed(() => latestSnapshot.value ? formatTime(latestSnapshot.value.createdAt) : "尚未备份");
+const updateVersion = computed(() => store.update?.available ? store.update.latestVersion : "");
 </script>
 
 <template>
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark"><img src="/icon.svg" alt="" /></div>
+      <div class="brand-mark"><svg class="whale-mark" aria-hidden="true"><use href="#i-whale"></use></svg></div>
       <div class="brand-copy">
         <strong>DSH Backup</strong>
-        <span>核心数据备份</span>
+        <span>{{ version }}</span>
       </div>
     </div>
 
+    <div class="nav-label">工作台</div>
     <nav class="nav" aria-label="主导航">
       <button
         class="nav-item"
         :class="{ active: store.page === 'dashboard' }"
         :aria-current="store.page === 'dashboard' ? 'page' : undefined"
-        aria-label="概览"
+        aria-label="总览"
+        title="总览"
         @click="go('dashboard')"
       >
         <svg class="icon"><use href="#i-grid"></use></svg>
-        <span>概览</span>
+        <span class="nav-text">总览</span>
       </button>
       <button
         class="nav-item"
         :class="{ active: store.page === 'history' }"
         :aria-current="store.page === 'history' ? 'page' : undefined"
-        aria-label="备份历史"
+        aria-label="归档历史"
+        title="归档历史"
         @click="go('history')"
       >
-        <svg class="icon"><use href="#i-history"></use></svg>
-        <span>备份历史</span>
+        <svg class="icon"><use href="#i-archive"></use></svg>
+        <span class="nav-text">归档历史</span>
+        <span v-if="snapshots.length" class="nav-badge">{{ snapshots.length }}</span>
       </button>
       <button
         class="nav-item"
         :class="{ active: store.page === 'settings' }"
         :aria-current="store.page === 'settings' ? 'page' : undefined"
         aria-label="设置"
+        title="设置"
         @click="go('settings')"
       >
         <svg class="icon"><use href="#i-settings"></use></svg>
-        <span>设置</span>
+        <span class="nav-text">设置</span>
       </button>
     </nav>
 
@@ -60,17 +72,17 @@ const version = computed(() => store.boot?.app.version ?? "1.1.0");
       浏览器预览 · 模拟数据
     </div>
 
-    <div class="sidebar-note">
-      <div class="sidebar-mode">
-        <span class="dot"></span>
-        <span>本地备份</span>
-      </div>
-      <p>本地归档 · 自主管理</p>
-    </div>
+    <button class="github-card" type="button" title="打开 GitHub 仓库 LeuJasYoh/DSHBackup" aria-label="打开 GitHub 仓库" @click="openRepository">
+      <span class="github-mark"><svg class="icon github-icon"><use href="#i-github"></use></svg></span>
+      <span class="github-copy">
+        <span>LeuJasYoh/DSHBackup</span>
+      </span>
+      <span v-if="updateVersion" class="update-badge" :title="`发现新版本 v${updateVersion}`">v{{ updateVersion }}</span>
+    </button>
 
     <div class="sidebar-footer">
-      <span>v{{ version }}</span>
-      <span>{{ sevenZip }}</span>
+      <div class="side-foot-row"><i class="pulse"></i>上次备份 {{ lastBackup }}</div>
+      <div class="side-version">{{ platform }} · {{ sevenZip }}</div>
     </div>
   </aside>
 </template>

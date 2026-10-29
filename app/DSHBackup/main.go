@@ -12,10 +12,19 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
 	"DSHBackup/internal/apppath"
+	"DSHBackup/internal/platform"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+// windowBackground 与 style.css 的 --bg 保持一致，避免首帧出现错色。
+func windowBackground() *options.RGBA {
+	if platform.UsesLightTheme() {
+		return &options.RGBA{R: 247, G: 246, B: 244, A: 255}
+	}
+	return &options.RGBA{R: 11, G: 11, B: 12, A: 255}
+}
 
 func main() {
 	paths, err := apppath.Resolve()
@@ -46,7 +55,7 @@ func main() {
 		DisableResize:    false,
 		Frameless:        false,
 		StartHidden:      false,
-		BackgroundColour: &options.RGBA{R: 246, G: 247, B: 249, A: 255},
+		BackgroundColour: windowBackground(),
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

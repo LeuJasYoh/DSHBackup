@@ -1,5 +1,6 @@
 export type CompressionLevel = "fast" | "balanced" | "max";
 export type ScheduleKind = "manual" | "daily" | "weekly";
+export type Theme = "system" | "light" | "dark";
 export type Page = "dashboard" | "history" | "settings";
 export type SettingsTab = "backup" | "security" | "about";
 export type TaskKind = "backup" | "restore" | "verify";
@@ -18,6 +19,8 @@ export interface ScheduleConfig {
 export interface RetentionConfig { local: number }
 export interface Config {
   schemaVersion: number;
+  theme: Theme;
+  updateCheck: boolean;
   onboardingComplete: boolean;
   backupDir: string;
   includeDesktop: boolean;
@@ -101,6 +104,15 @@ export interface ScheduleInfo {
   weekday: number;
   nextRun: string;
   lastRun: string;
+}
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion?: string;
+  url?: string;
+  publishedAt?: string;
+  available: boolean;
+  checkedAt: string;
+  error?: string;
 }
 export interface Bootstrap {
   config: Config;

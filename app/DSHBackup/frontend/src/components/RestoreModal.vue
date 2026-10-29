@@ -23,6 +23,7 @@ const target = computed(() => targetMode.value === "custom" ? customTarget.value
 const desktopAvailable = computed(() => targetMode.value === "default" && !!selected.value?.desktopIncluded);
 const desktopTarget = computed(() => store.boot?.dsh.sources.filter((source) => source.name !== "dsh").map((source) => source.path).join("；") || "系统桌面登录态目录");
 const blocked = computed(() => restoreBlockReason(selected.value, store.boot?.key));
+const archiveName = computed(() => selected.value?.localPath?.split(/[\\/]/).pop() || (selected.value ? `dsh-backup-${selected.value.id}.7z` : "选择一份归档"));
 const targetError = computed(() => {
   if (!isAbsoluteDirectory(target.value)) return "请选择有效的 Windows 绝对目录。";
   const normalize = (path: string) => path.replaceAll("/", "\\").replace(/\\+$/, "").toLowerCase();
@@ -71,38 +72,77 @@ async function submit() {
 <template>
   <div class="overlay modal open" @click.self="close">
     <div ref="card" class="modal-card restore-modal" role="dialog" aria-modal="true" aria-labelledby="restoreTitle">
-      <div class="modal-head"><div><span class="eyebrow">请确认覆盖范围</span><h2 id="restoreTitle">恢复备份</h2></div><button class="icon-btn modal-close" :disabled="locked" aria-label="关闭" @click="close">×</button></div>
+      <div class="modal-head">
+        <div>
+          <h2 id="restoreTitle">恢复归档</h2>
+          <p class="modal-sub">{{ archiveName }}</p>
+        </div>
+        <button class="icon-btn modal-close" type="button" :disabled="locked" aria-label="关闭" @click="close"><svg class="icon"><use href="#i-x"></use></svg></button>
+      </div>
       <div class="modal-body">
+        <div class="callout warn" style="margin: 0 0 12px">
+          <svg class="icon"><use href="#i-alert"></use></svg>
+          <span>恢复会覆盖目标中的现有数据。请先关闭 DSH；{{ store.boot?.dsh.running ? "当前检测到 DSH 正在运行。" : "恢复完成后重新启动 DSH。" }}</span>
+        </div>
+
         <fieldset class="form-fieldset" :disabled="locked">
-          <label class="field-label" for="restoreSnapshot">来源备份</label>
-          <select id="restoreSnapshot" v-model="selectedId" autofocus class="text-input select-input"><option v-for="snapshot in snapshots" :key="snapshot.id" :value="snapshot.id">{{ formatDate(snapshot.createdAt) }} · {{ formatBytes(snapshot.size) }} · {{ statusLabel(snapshot.status) }}</option></select>
-          <p v-if="selected" class="hint">{{ selected.encrypted ? '已加密，需使用对应本地私钥。' : '未加密归档。' }}</p>
+          <div class="field-block" style="margin-top: 0">
+            <label class="field-label" for="restoreSnapshot">来源归档</label>
+            <select id="restoreSnapshot" v-model="selectedId" autofocus class="text-input select-input"><option v-for="snapshot in snapshots" :key="snapshot.id" :value="snapshot.id">{{ formatDate(snapshot.createdAt) }} · {{ formatBytes(snapshot.size) }} · {{ statusLabel(snapshot.status) }}</option></select>
+            <p v-if="selected" class="hint">{{ selected.encrypted ? "已加密，需使用对应本地私钥。" : "未加密归档。" }}</p>
+          </div>
+
+          <div v-if="selected" class="summary-grid">
+            <div class="summary-cell"><span class="k">归档大小</span><span class="v">{{ formatBytes(selected.size) }}</span></div>
+            <div class="summary-cell"><span class="k">创建时间</span><span class="v">{{ formatDate(selected.createdAt) }}</span></div>
+            <div class="summary-cell"><span class="k">备份范围</span><span class="v">{{ selected.desktopIncluded ? "DSH + 桌面" : "仅 DSH" }}</span></div>
+            <div class="summary-cell"><span class="k">完整性</span><span class="v" :style="{ color: selected.status === 'ready' ? 'var(--green)' : selected.status === 'size-mismatch' ? 'var(--amber)' : 'var(--red)' }">{{ statusLabel(selected.status) }}</span></div>
+          </div>
+
           <div class="field-block">
             <div class="field-label">恢复方式</div>
-            <div class="inline-options"><label class="radio-inline"><input v-model="targetMode" type="radio" value="default" />覆盖当前数据</label><label class="radio-inline"><input v-model="targetMode" type="radio" value="custom" />恢复到其他目录</label></div>
-            <div v-if="targetMode === 'custom'" class="path-input target-input"><input v-model="customTarget" class="text-input mono" placeholder="选择用于接收 DSH 核心数据的目录" aria-label="其他恢复目录" /><button class="btn btn-secondary btn-small" @click="browseTarget">浏览</button></div>
-            <p v-if="targetMode === 'custom'" class="hint">此模式只恢复 DSH 核心数据，不恢复系统桌面登录态；目标目录中即将覆盖的文件会被替换。</p>
+            <div class="radio-list" role="radiogroup" aria-label="恢复方式">
+              <label class="radio-card" :class="{ 'is-active': targetMode === 'default' }">
+                <input v-model="targetMode" type="radio" value="default" />
+                <span class="radio-dot"></span>
+                <span class="radio-copy"><strong>覆盖当前 DSH 数据</strong><span>恢复到当前数据目录；若归档包含桌面登录态，可一并恢复。</span></span>
+              </label>
+              <label class="radio-card" :class="{ 'is-active': targetMode === 'custom' }">
+                <input v-model="targetMode" type="radio" value="custom" />
+                <span class="radio-dot"></span>
+                <span class="radio-copy"><strong>恢复到其他目录</strong><span>不影响当前数据；自定义目录不会包含系统桌面登录态。</span></span>
+              </label>
+            </div>
+            <div v-if="targetMode === 'custom'" class="path-input target-input">
+              <input v-model="customTarget" class="text-input mono" placeholder="选择用于接收 DSH 核心数据的目录" aria-label="其他恢复目录" />
+              <button class="btn btn-secondary btn-small" type="button" @click="browseTarget">浏览</button>
+            </div>
+            <p v-if="targetMode === 'custom'" class="hint">目标目录中即将覆盖的文件会被替换；其他文件会保留。</p>
           </div>
+
           <div class="field-block">
             <div class="field-label">恢复内容</div>
-            <div class="check-row"><span class="check-fixed" aria-hidden="true">&#10003;</span><span><strong>DSH 核心数据</strong><small>凭据、会话、附件、插件、用量</small></span></div>
-            <label class="check-row" :class="{ disabled: !desktopAvailable }"><input v-model="includeDesktop" type="checkbox" :disabled="!desktopAvailable" /><span><strong>桌面登录态</strong><small>{{ targetMode === 'custom' ? '恢复到其他目录时禁用，不修改系统桌面登录态。' : selected?.desktopIncluded ? '恢复到系统桌面登录态目录。' : '此备份不包含桌面登录态。' }}</small></span></label>
+            <div class="check-row"><span class="check-fixed" aria-hidden="true">✓</span><span><strong>DSH 核心数据</strong><small>必选</small></span></div>
+            <label class="check-row" :class="{ disabled: !desktopAvailable }"><input v-model="includeDesktop" type="checkbox" :disabled="!desktopAvailable" /><span><strong>桌面登录态</strong><small>{{ targetMode === "custom" ? "恢复到其他目录时禁用，不修改系统桌面登录态。" : selected?.desktopIncluded ? "恢复到系统桌面登录态目录。" : "此备份不包含桌面登录态。" }}</small></span></label>
           </div>
+
           <label class="check-row"><input v-model="preRestore" type="checkbox" /><span><strong>恢复前先备份即将覆盖的现有数据</strong><small>建议保持开启；创建一份恢复前快照以保护此次覆盖目标。</small></span></label>
+
+          <div class="restore-summary">
+            <div class="summary-row"><span>目标目录</span><strong class="mono path-wrap">{{ target || "尚未选择" }}</strong></div>
+            <div class="summary-row"><span>影响内容</span><strong>DSH 核心数据{{ desktopAvailable && includeDesktop ? " + 桌面登录态" : "；不修改系统桌面登录态" }}</strong></div>
+            <div v-if="desktopAvailable && includeDesktop" class="summary-row"><span>桌面目录</span><strong class="mono path-wrap">{{ desktopTarget }}</strong></div>
+            <div class="summary-row"><span>覆盖保护</span><strong>{{ preRestore ? "先备份即将覆盖的现有数据" : "未开启；本次覆盖没有预恢复备份保护" }}</strong></div>
+          </div>
         </fieldset>
-        <div class="wizard-summary restore-summary" aria-label="恢复影响总结">
-          <div class="summary-row"><span>来源归档</span><strong class="mono path-wrap">{{ selected?.localPath || '归档不可用' }}</strong></div>
-          <div class="summary-row"><span>目标目录</span><strong class="mono path-wrap">{{ target || '尚未选择' }}</strong></div>
-          <div class="summary-row"><span>影响内容</span><strong>DSH 核心数据{{ desktopAvailable && includeDesktop ? ' + 桌面登录态' : '；不修改系统桌面登录态' }}</strong></div>
-          <div v-if="desktopAvailable && includeDesktop" class="summary-row"><span>桌面目录</span><strong class="mono path-wrap">{{ desktopTarget }}</strong></div>
-          <div class="summary-row"><span>覆盖保护</span><strong>{{ preRestore ? '先备份即将覆盖的现有数据' : '未开启；本次覆盖没有预恢复备份保护' }}</strong></div>
-        </div>
-        <div class="restore-warning"><span class="alert-icon">!</span><p>恢复会覆盖上述目标中的现有数据。请先关闭 DSH；恢复完成后重新启动。{{ store.boot?.dsh.running ? '当前检测到 DSH 正在运行。' : '' }}</p></div>
       </div>
       <div class="modal-bottom">
         <p v-if="blocked || (targetMode === 'custom' && targetError)" class="inline-error" role="alert">{{ blocked || targetError }}</p>
         <p v-if="failure" class="inline-error" role="alert">{{ failure }}</p>
-        <div class="modal-footer"><button class="btn btn-ghost" :disabled="locked" @click="close">取消</button><button class="btn btn-danger" :disabled="locked || !!blocked || !!targetError" @click="submit">{{ submitting || store.startingTask ? '正在启动…' : '开始恢复' }}</button></div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" type="button" :disabled="locked" @click="close">取消</button>
+          <button class="btn btn-danger" type="button" :disabled="locked || !!blocked || !!targetError" @click="submit">{{ submitting || store.startingTask ? "正在启动…" : "开始恢复" }}</button>
+        </div>
       </div>
     </div>
   </div>

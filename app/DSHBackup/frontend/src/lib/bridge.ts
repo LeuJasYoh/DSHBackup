@@ -1,4 +1,4 @@
-import type { Bootstrap, Config, Notice, OnboardingInput, RestoreRequest, TaskProgress, TaskResult, VerifyRequest } from "./types";
+import type { Bootstrap, Config, Notice, OnboardingInput, RestoreRequest, TaskProgress, TaskResult, UpdateInfo, VerifyRequest } from "./types";
 
 declare global {
   interface Window {
@@ -65,6 +65,9 @@ export const api = {
   copyText: (text: string) => invoke<void>("CopyText", text),
   exportDiagnostics: () => invoke<string>("ExportDiagnostics"),
   readLogTail: (lines: number) => invoke<string>("ReadLogTail", lines),
+  checkForUpdates: (force: boolean) => invoke<UpdateInfo>("CheckForUpdates", force),
+  openRepository: () => invoke<void>("OpenRepository"),
+  openReleasePage: (url: string) => invoke<void>("OpenReleasePage", url),
   onTaskProgress: (callback: (payload: TaskProgress) => void) => subscribe("task:progress", callback),
   onTaskResult: (callback: (payload: TaskResult) => void) => subscribe("task:result", callback),
   onStateChanged: (callback: (payload: { reason?: string }) => void) => subscribe("state:changed", callback),

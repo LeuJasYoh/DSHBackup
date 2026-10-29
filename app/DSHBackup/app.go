@@ -66,6 +66,10 @@ type App struct {
 	sourceMu sync.Mutex
 	sources  []SourceInfo
 	sourceAt time.Time
+
+	updateMu     sync.Mutex
+	lastUpdate   UpdateInfo
+	lastUpdateAt time.Time
 }
 
 func NewApp(paths apppath.Paths) *App {

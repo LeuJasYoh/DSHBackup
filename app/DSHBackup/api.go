@@ -66,6 +66,16 @@ type ScheduleInfo struct {
 	LastRun string `json:"lastRun"`
 }
 
+type UpdateInfo struct {
+	CurrentVersion string `json:"currentVersion"`
+	LatestVersion  string `json:"latestVersion,omitempty"`
+	URL            string `json:"url,omitempty"`
+	PublishedAt    string `json:"publishedAt,omitempty"`
+	Available      bool   `json:"available"`
+	CheckedAt      string `json:"checkedAt"`
+	Error          string `json:"error,omitempty"`
+}
+
 type Bootstrap struct {
 	Config         config.Config       `json:"config"`
 	App            AppInfo             `json:"app"`

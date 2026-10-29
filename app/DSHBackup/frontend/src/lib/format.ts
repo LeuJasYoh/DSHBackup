@@ -16,10 +16,38 @@ export function formatDate(value?: string): string {
   const pad = (part: number) => String(part).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
+export function formatTime(value?: string): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+export function formatRelative(value?: string): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const now = new Date();
+  const start = (input: Date) => new Date(input.getFullYear(), input.getMonth(), input.getDate()).getTime();
+  const days = Math.round((start(now) - start(date)) / 86_400_000);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (days === 0) return `今天 ${time}`;
+  if (days === 1) return `昨天 ${time}`;
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
+}
+export function kindShort(kind: string): string {
+  if (kind === "scheduled") return "计划";
+  if (kind === "pre-restore") return "恢复前";
+  return "手动";
+}
 export function compressionLabel(level?: string): string {
   if (level === "fast") return "快速压缩";
   if (level === "max") return "极限压缩";
   return level === "balanced" ? "均衡压缩" : "未记录";
+}
+export function compressionShort(level?: string): string {
+  return compressionLabel(level).replace("压缩", "");
 }
 export function kindLabel(kind: string): string {
   if (kind === "pre-restore") return "恢复前快照";
@@ -112,6 +140,7 @@ export function extraArgsError(text: string): string {
 }
 export function validateConfig(config: Config, extraArgsText: string): string {
   if (!isAbsoluteDirectory(config.backupDir)) return "备份目录必须是有效的 Windows 绝对路径";
+  if (!["system", "dark", "light"].includes(config.theme)) return "请选择有效的界面主题";
   if (!Number.isInteger(config.retention.local) || config.retention.local < 1 || config.retention.local > 99) return "保留份数必须是 1 到 99 的整数";
   if (config.schedule.kind !== "manual" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(config.schedule.time)) return "计划时间格式必须为 HH:MM";
   if (!Number.isInteger(config.schedule.weekday) || config.schedule.weekday < 0 || config.schedule.weekday > 6) return "请选择有效的星期";

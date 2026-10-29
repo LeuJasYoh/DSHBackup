@@ -1,7 +1,8 @@
 import { computed, reactive } from "vue";
 import { api, copyToClipboard, isPreviewMode } from "./lib/bridge";
 import { errorMessage, restoreBlockReason } from "./lib/format";
-import type { Bootstrap, Config, OnboardingInput, Page, RestoreRequest, SettingsTab, Snapshot, TaskContext, TaskProgress, TaskResult } from "./lib/types";
+import { applyTheme, normalizeTheme } from "./lib/theme";
+import type { Bootstrap, Config, OnboardingInput, Page, RestoreRequest, SettingsTab, Snapshot, TaskContext, TaskProgress, TaskResult, UpdateInfo } from "./lib/types";
 
 export interface ConfirmState {
   title: string;
@@ -38,6 +39,9 @@ export const store = reactive({
   saving: false,
   refreshing: false,
   previewMode: isPreviewMode,
+  update: null as UpdateInfo | null,
+  updateChecking: false,
+  updateDismissed: false,
   unsubscribes: [] as Array<() => void>,
   refreshTimer: null as ReturnType<typeof setTimeout> | null,
 });
@@ -64,7 +68,7 @@ let refreshSequence = 0;
 function normalizeBootstrap(data: Bootstrap): Bootstrap {
   return {
     ...data,
-    config: { ...data.config, compression: { ...data.config.compression, extraArgs: data.config.compression.extraArgs ?? [] } },
+    config: { ...data.config, theme: normalizeTheme(data.config.theme), updateCheck: data.config.updateCheck !== false, compression: { ...data.config.compression, extraArgs: data.config.compression.extraArgs ?? [] } },
     localSnapshots: data.localSnapshots ?? [], warnings: data.warnings ?? [],
     app: { ...data.app, warnings: data.app?.warnings ?? [] },
     dsh: { ...data.dsh, evidence: data.dsh?.evidence ?? [], sources: data.dsh?.sources ?? [] },
@@ -75,7 +79,11 @@ export async function refresh(quiet = true) {
   if (!quiet) store.refreshing = true;
   try {
     const data = await api.getBootstrap();
-    if (sequence === refreshSequence) { store.boot = normalizeBootstrap(data); store.bootError = ""; }
+    if (sequence === refreshSequence) {
+      store.boot = normalizeBootstrap(data);
+      store.bootError = "";
+      if (!store.settingsDirty) applyTheme(store.boot.config.theme, true);
+    }
   } catch (error) {
     if (sequence === refreshSequence) store.bootError = errorMessage(error);
   } finally {
@@ -130,6 +138,7 @@ export async function init() {
   );
   await refresh();
   store.ready = true;
+  if (store.boot?.config.updateCheck) void checkForUpdates(false);
   if (import.meta.env.DEV && store.previewMode) {
     const params = new URLSearchParams(window.location.search);
     const route = params.get("preview");
@@ -262,6 +271,7 @@ export async function saveConfig(config: Config): Promise<Config> {
   try {
     await api.saveConfig(config);
     const normalized = await reloadAfterSave();
+    applyTheme(normalized.theme, true);
     showToast("设置已保存", "success");
     return normalized;
   } finally { store.saving = false; }
@@ -269,7 +279,7 @@ export async function saveConfig(config: Config): Promise<Config> {
 export async function completeOnboarding(input: OnboardingInput) {
   if (isBusy.value) throw new Error("操作进行中，请稍后重试。");
   store.saving = true;
-  try { await api.completeOnboarding(input); await reloadAfterSave(); }
+  try { await api.completeOnboarding(input); const normalized = await reloadAfterSave(); applyTheme(normalized.theme, true); }
   finally { store.saving = false; }
 }
 export async function checkDSH(notify = true) {
@@ -306,3 +316,30 @@ export async function copyText(text: string, label = "已复制") {
 }
 export function pickDirectory(defaultDir: string): Promise<string> { return api.pickDirectory(defaultDir); }
 export function dismissTaskResult() { store.taskResultDismissed = true; }
+export async function checkForUpdates(manual = false): Promise<void> {
+  if (store.updateChecking) return;
+  store.updateChecking = true;
+  try {
+    const info = await api.checkForUpdates(manual);
+    store.update = info;
+    if (info.available) store.updateDismissed = false;
+    if (manual) {
+      if (info.error) showToast(info.error, "error");
+      else if (info.available) showToast(`发现新版本 v${info.latestVersion}`, "info");
+      else showToast(`当前已是最新版本 v${info.currentVersion}`, "success");
+    }
+  } catch (error) {
+    const message = errorMessage(error);
+    store.update = { currentVersion: store.boot?.app.version ?? "", checkedAt: new Date().toISOString(), available: false, error: message };
+    if (manual) showToast(message, "error");
+  } finally {
+    store.updateChecking = false;
+  }
+}
+export function dismissUpdate() { store.updateDismissed = true; }
+export async function openRepository(): Promise<void> {
+  try { await api.openRepository(); } catch (error) { showToast(errorMessage(error), "error"); }
+}
+export async function openReleasePage(url = ""): Promise<void> {
+  try { await api.openReleasePage(url || store.update?.url || ""); } catch (error) { showToast(errorMessage(error), "error"); }
+}

@@ -23,6 +23,14 @@ const (
 	ScheduleWeekly ScheduleKind = "weekly"
 )
 
+type Theme string
+
+const (
+	ThemeSystem Theme = "system"
+	ThemeDark   Theme = "dark"
+	ThemeLight  Theme = "light"
+)
+
 type Compression struct {
 	Level        string   `json:"level"`
 	DictionaryMB int      `json:"dictionaryMb"`
@@ -42,6 +50,8 @@ type Retention struct {
 
 type Config struct {
 	SchemaVersion      int         `json:"schemaVersion"`
+	Theme              Theme       `json:"theme"`
+	UpdateCheck        bool        `json:"updateCheck"`
 	OnboardingComplete bool        `json:"onboardingComplete"`
 	BackupDir          string      `json:"backupDir"`
 	IncludeDesktop     bool        `json:"includeDesktop"`
@@ -59,6 +69,8 @@ var timePattern = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
 func Default(defaultBackupDir string) Config {
 	return Config{
 		SchemaVersion:      SchemaVersion,
+		Theme:              ThemeSystem,
+		UpdateCheck:        true,
 		OnboardingComplete: false,
 		BackupDir:          defaultBackupDir,
 		IncludeDesktop:     true,
@@ -101,6 +113,9 @@ func Load(path, defaultBackupDir string) (Config, error) {
 func (c *Config) Normalize(defaultBackupDir string) {
 	if c.SchemaVersion == 0 {
 		c.SchemaVersion = SchemaVersion
+	}
+	if c.Theme != ThemeSystem && c.Theme != ThemeDark && c.Theme != ThemeLight {
+		c.Theme = ThemeSystem
 	}
 	if c.BackupDir == "" {
 		c.BackupDir = defaultBackupDir
@@ -157,6 +172,9 @@ func Save(path string, cfg Config) error {
 func Validate(cfg Config) error {
 	if cfg.BackupDir == "" {
 		return errors.New("本地备份目录不能为空")
+	}
+	if cfg.Theme != ThemeSystem && cfg.Theme != ThemeDark && cfg.Theme != ThemeLight {
+		return fmt.Errorf("未知界面主题：%s", cfg.Theme)
 	}
 	if !filepath.IsAbs(cfg.BackupDir) {
 		return fmt.Errorf("本地备份目录必须是绝对路径：%s", cfg.BackupDir)

@@ -11,6 +11,12 @@ import (
 
 func TestValidateDefaults(t *testing.T) {
 	cfg := Default(t.TempDir())
+	if cfg.Theme != ThemeSystem {
+		t.Fatalf("default theme should follow the system: %s", cfg.Theme)
+	}
+	if !cfg.UpdateCheck {
+		t.Fatal("default config should check for updates")
+	}
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("default config should be valid: %v", err)
 	}
@@ -21,6 +27,11 @@ func TestValidateRejectsUnsafe(t *testing.T) {
 	cfg.BackupDir = "relative"
 	if err := Validate(cfg); err == nil {
 		t.Fatal("relative backup dir should be rejected")
+	}
+	cfg = Default(t.TempDir())
+	cfg.Theme = "neon"
+	if err := Validate(cfg); err == nil {
+		t.Fatal("unknown theme should be rejected")
 	}
 	cfg = Default(t.TempDir())
 	cfg.Compression.ExtraArgs = []string{"-psecret"}
@@ -56,12 +67,37 @@ func TestNextRun(t *testing.T) {
 	}
 }
 
+func TestLoadWithoutVisualPreferencesDefaultsToSystem(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	raw, err := json.Marshal(map[string]any{
+		"schemaVersion":      1,
+		"onboardingComplete": true,
+		"backupDir":          filepath.Join(dir, "backups"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path, filepath.Join(dir, "default-backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Theme != ThemeSystem || !loaded.UpdateCheck {
+		t.Fatalf("legacy config should default to system theme and update checks: %+v", loaded)
+	}
+}
+
 func TestSaveLoad(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	cfg := Default(filepath.Join(dir, "backups"))
 	cfg.OnboardingComplete = true
 	cfg.Retention.Local = 9
+	cfg.Theme = ThemeLight
+	cfg.UpdateCheck = false
 	if err := Save(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +105,7 @@ func TestSaveLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loaded.OnboardingComplete || loaded.Retention.Local != 9 {
+	if !loaded.OnboardingComplete || loaded.Retention.Local != 9 || loaded.Theme != ThemeLight || loaded.UpdateCheck {
 		t.Fatalf("unexpected loaded config: %+v", loaded)
 	}
 }

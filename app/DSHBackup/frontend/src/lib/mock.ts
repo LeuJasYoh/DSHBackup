@@ -1,5 +1,5 @@
 import { cloneConfig, errorMessage, isAbsoluteDirectory, restoreBlockReason, validateConfig } from "./format";
-import type { Bootstrap, Config, Notice, OnboardingInput, RestoreRequest, Snapshot, TaskKind, TaskProgress, TaskResult, VerifyRequest } from "./types";
+import type { Bootstrap, Config, Notice, OnboardingInput, RestoreRequest, Snapshot, TaskKind, TaskProgress, TaskResult, UpdateInfo, VerifyRequest } from "./types";
 
 type Listener = (payload: unknown) => void;
 const listeners = new Map<string, Set<Listener>>();
@@ -17,7 +17,7 @@ const delay = (ms = 80) => new Promise<void>((resolve) => setTimeout(resolve, ms
 const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
 const root = "D:\\DSHBackup";
 const baseConfig: Config = {
-  schemaVersion: 1, onboardingComplete: params.get("onboarding") !== "1", backupDir: `${root}\\backups`,
+  schemaVersion: 1, theme: "system", updateCheck: true, onboardingComplete: params.get("onboarding") !== "1", backupDir: `${root}\\backups`,
   includeDesktop: true, encryptionLocal: false,
   compression: { level: "balanced", dictionaryMb: 0, threads: 0, extraArgs: [] },
   schedule: { kind: "manual", time: "03:00", weekday: 1 }, retention: { local: 7 },
@@ -189,5 +189,18 @@ export const mockApi = {
   async CopyText(text: string): Promise<void> { await navigator.clipboard.writeText(text); },
   async ExportDiagnostics(): Promise<string> { await delay(); return `${root}\\data\\logs\\diagnostics-preview.zip`; },
   async ReadLogTail(_lines: number): Promise<string> { return '{"level":"info","message":"开发模拟日志，未读写真实文件"}'; },
+  async CheckForUpdates(_force: boolean): Promise<UpdateInfo> {
+    await delay();
+    const currentVersion = bootstrap.app.version;
+    if (params.get("update") === "1") {
+      return {
+        currentVersion, latestVersion: "1.2.0", available: true, checkedAt: new Date().toISOString(),
+        url: "https://github.com/LeuJasYoh/DSHBackup/releases/tag/v1.2.0", publishedAt: "2026-10-30T10:00:00Z",
+      };
+    }
+    return { currentVersion, latestVersion: currentVersion, available: false, checkedAt: new Date().toISOString(), url: "https://github.com/LeuJasYoh/DSHBackup/releases" };
+  },
+  async OpenRepository(): Promise<void> { await delay(); },
+  async OpenReleasePage(_url: string): Promise<void> { await delay(); },
 };
 export function mockEmitNotice(notice: Notice) { mockEvents.emit("app:notice", notice); }
