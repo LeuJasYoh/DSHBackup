@@ -35,9 +35,9 @@ function makeSnapshot(id: string, date: Date, config: Config): Snapshot {
 const bootstrap: Bootstrap = {
   config: baseConfig,
   app: {
-    version: "1.1.0", buildTime: "2026-10-26T19:00:00+08:00", platform: "windows/amd64", writable: true, portable: true, warnings: [],
+    version: "1.2.0", buildTime: "2026-10-26T19:00:00+08:00", platform: "windows/amd64", writable: true, portable: true, warnings: [],
     sevenZip: { path: "tools\\7za.exe", version: "7-Zip (a) 26.05 (x64)", ok: true },
-    sidecar: { path: "dsh-backup-core.exe", version: "1.1.0", ok: true },
+    sidecar: { path: "dsh-backup-core.exe", version: "1.2.0", ok: true },
   },
   paths: { appDir: root, dataDir: `${root}\\data`, configDir: `${root}\\data\\config`, logsDir: `${root}\\data\\logs`, keysDir: `${root}\\data\\keys`, backupDir: baseConfig.backupDir, defaultBackupDir: baseConfig.backupDir },
   dsh: {

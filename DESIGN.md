@@ -1,8 +1,8 @@
 # DSH 核心数据备份工具设计文档
 
-- 版本：v1.1.0（本地优先）
-- 日期：2026-10-29
-- 状态：v1.1.0 已移除 GitHub 云端上传与代理；工作区包含未发布的界面重构和可选 GitHub 发行版检查，详见第 23 章。第 10、20、21 章记录的云端设计已废弃，仅作历史决策参考
+- 版本：v1.2.0（本地优先）
+- 日期：2026-10-30
+- 状态：v1.2.0 在 v1.1.0 的纯本地基础上重做了界面与交互（第 24、25 章）：中性纸墨视觉体系、跟随系统主题、六条实测交互模式、可选只读 GitHub 发行版检查。第 10、20、21 章记录的云端设计已废弃，仅作历史决策参考
 - 目标平台：Windows 10/11（首版）；Linux 暂不实现，预留接口
 
 ---
@@ -1147,3 +1147,34 @@ app\DSHBackup\
 - **逐块滚动揭示**：官网每块进视口 `translateY(30px)` + 淡入，工具里滚一下重放一次会很烦，只在切换页面时保留一次进场
 - **20 秒循环演示**：那是营销页替产品说话的装置，我们的界面本身就是活的
 - **120px 吸顶偏移**：官网文章页左栏 `sticky top:120px` 是给浮动导航留的，我们按实际栏高处理
+
+## 26. v1.2.0 发布：界面与交互重构
+
+版本号从 1.1.0 升到 1.2.0，只包含第 24、25 章记录的视觉与交互改动；备份格式、配置 schema、密钥与已有归档全部兼容。
+
+### 26.1 版本号落点
+
+- `app.go` 的 `Version`（由 `build.ps1` 的 `-ldflags -X main.Version` 覆盖）
+- `build.ps1` 的 `$Version` 默认值
+- `wails.json` 的 `info.productVersion`
+- `frontend/package.json` 与 `package-lock.json`
+- 侧栏版本兜底值、浏览器 mock 的版本字段
+- `packaging/README.txt` 的标题与「从 1.1.x 升级」小节
+
+### 26.2 打包不再携带旧状态
+
+`build.ps1` 的组装步骤改为显式删除输出目录下的 `data` 和 `backups`，标题也从「保留已有 data 和 backups」改成「不带上旧的 data 和 backups」。
+发布包因此只含 9 个文件：`DSHBackup.exe`、`dsh-backup-core.exe`、`tools\7za.exe`、`tools\License.txt`、`icon.ico`、`README.txt`、`THIRD_PARTY_NOTICES.txt`、`7-Zip-SOURCE.txt`、`BUILD.txt`。
+
+### 26.3 交付物
+
+- `dist\DSHBackup-1.2.0-win64.zip`（6,121,819 字节）
+- SHA-256：`8b89f311916c4ad989c8b1a097fb25e6d4deef19a7806c3c640f253b867578aa`
+- `BUILD.txt`：构建时间 `2026-10-29T16:55:50Z`；`DSHBackup.exe` SHA-256 `ea26d05a63715646ff9927bc3b8a1d6e8a1293076e7ffb13a115f126d87aa9cf`
+
+### 26.4 验证
+
+- `build.ps1 -Version 1.2.0` 全量通过：sidecar、Wails、前端、7za 自检、ZIP
+- 把 ZIP 内容复制到临时目录后启动：首次运行为干净的两步引导（说明没有携带旧 `data`），侧栏版本显示 `1.2.0`，检测到真实 `C:\Users\23500\.dsh` 104.8 MB
+- 临时目录测试完成后已删除，`dist\DSHBackup` 保持只含 9 个发布文件
+- 未修改真实 `%USERPROFILE%\.dsh`

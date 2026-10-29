@@ -8,7 +8,7 @@ const sevenZip = computed(() => {
   const match = version.match(/(\d+\.\d+)/);
   return match ? `7z ${match[1]}` : "7z";
 });
-const version = computed(() => store.boot?.app.version ?? "1.1.0");
+const version = computed(() => store.boot?.app.version ?? "1.2.0");
 const platform = computed(() => {
   const value = store.boot?.app.platform ?? "";
   return value.startsWith("windows") ? "Windows x64" : value || "Windows x64";
