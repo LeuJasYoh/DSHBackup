@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$Version = "1.0.0",
+    [string]$Version = "1.1.0",
     [switch]$SkipFrontendInstall,
     [switch]$SkipZip
 )
@@ -76,10 +76,9 @@ try {
 $appExe = Join-Path $appRoot "build\bin\DSHBackup.exe"
 if (-not (Test-Path $appExe)) { throw "找不到 Wails 输出：$appExe" }
 
-Write-Step "组装便携版目录"
-if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
-New-Item -ItemType Directory -Path $outDir | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $outDir "tools") | Out-Null
+Write-Step "组装便携版目录（保留已有 data 和 backups）"
+New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $outDir "tools") | Out-Null
 
 Copy-Item $appExe (Join-Path $outDir "DSHBackup.exe")
 Copy-Item $sidecarPath (Join-Path $outDir "dsh-backup-core.exe")

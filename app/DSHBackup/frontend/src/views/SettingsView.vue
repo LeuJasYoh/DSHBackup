@@ -1,800 +1,227 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { api } from "../lib/bridge";
-import {
-  clearProxyPassword as clearStoredProxyPassword,
-  createRepo,
-  disconnectGitHub,
-  exportDiagnostics,
-  listRepos,
-  openBackupFolder,
-  openDataFolder,
-  openExternal,
-  openGitHubModal,
-  openGitHubRepo,
-  openKeysFolder,
-  openLogsFolder,
-  pickDirectory,
-  saveConfig as storeSaveConfig,
-  selectRepo,
-  showToast,
-  store,
-  testProxy,
-} from "../store";
-import {
-  compressionLabel,
-  errorMessage,
-  formatBytes,
-  formatDate,
-  scheduleLabel,
-  weekdayLabel,
-} from "../lib/format";
-import type { CompressionLevel, Config, GitHubRepo, Mode, ProxyTestResult, SettingsTab } from "../lib/types";
+import { cloneConfig, compressionLabel, configFingerprint, errorMessage, extraArgsError, formatDate, parseExtraArgs, scheduleLabel, validateConfig, weekdayLabel } from "../lib/format";
+import { isBusy, openBackupFolder, openDataFolder, openKeysFolder, openLogsFolder, pickDirectory, saveConfig, store } from "../store";
+import type { CompressionLevel, Config, SettingsTab } from "../lib/types";
 
 const tabs: Array<{ id: SettingsTab; label: string }> = [
-  { id: "backup", label: "备份" },
-  { id: "cloud", label: "云端" },
-  { id: "network", label: "网络" },
-  { id: "security", label: "安全" },
-  { id: "general", label: "常规" },
-  { id: "about", label: "关于" },
+  { id: "backup", label: "备份" }, { id: "security", label: "安全" }, { id: "about", label: "关于" },
 ];
-
 const boot = computed(() => store.boot!);
 const draft = ref<Config | null>(null);
+const baseline = ref("");
 const extraArgsText = ref("");
-const proxyPassword = ref("");
-const proxyPasswordTouched = ref(false);
-const proxyTesting = ref(false);
-const proxyTestResult = ref<ProxyTestResult | null>(null);
-const repoQuery = ref("");
-const repoList = ref<GitHubRepo[]>([]);
-const repoLoading = ref(false);
-const repoInput = ref("");
-const newRepoName = ref("");
-const repoCreating = ref(false);
+const failure = ref("");
+const savedNote = ref("");
+const externalUpdate = ref(false);
+const browsing = ref(false);
 const logTail = ref("");
-const logLoading = ref(false);
+const toolBusy = ref(false);
+const toolMessage = ref("");
+const toolFailure = ref("");
+const locked = computed(() => isBusy.value || browsing.value);
+const dirty = computed(() => !!draft.value && configFingerprint(draft.value, extraArgsText.value) !== baseline.value);
+const argsError = computed(() => extraArgsError(extraArgsText.value));
+const validation = computed(() => draft.value ? validateConfig(draft.value, extraArgsText.value) : "设置尚未加载");
+const directoryChanged = computed(() => draft.value?.backupDir !== boot.value.config.backupDir);
 
-const compressionHints: Record<CompressionLevel, string> = {
-  fast: "备份更快，归档体积更大。",
-  balanced: "速度与体积平衡，推荐。",
-  max: "体积最小，压缩时间和 CPU 占用更高。",
-};
-
-const extraArgPatterns = [
-  /^-mx=[0-9]$/,
-  /^-md=(16|32|64|128|256|512|1024)m$/i,
-  /^-mmt=([1-9]|[1-5][0-9]|6[0-4])$/,
-  /^-mfb=([5-9]|[1-9][0-9]|1[0-9]{2}|2[0-6][0-9]|27[0-3])$/,
-  /^-ms=(on|off)$/,
-  /^-mqs=(on|off)$/,
-];
-
-function cloneConfig(config: Config): Config {
-  return JSON.parse(JSON.stringify(config)) as Config;
-}
-
-function comparable(config: Config): string {
-  const copy = cloneConfig(config);
-  copy.proxy.passwordSet = false;
-  copy.lastScheduledAt = "";
-  copy.github.login = "";
-  copy.github.avatarUrl = "";
-  copy.github.connectedAt = "";
-  return JSON.stringify(copy);
-}
-
-const dirty = computed(() => {
-  if (!draft.value) return false;
-  return comparable(draft.value) !== comparable(store.boot!.config);
-});
-
-function syncDraft() {
-  const config = store.boot?.config;
+function syncDraft(config = store.boot?.config) {
   if (!config) return;
   draft.value = cloneConfig(config);
-  extraArgsText.value = draft.value.compression.extraArgs.join(" ");
-  repoInput.value = config.github.owner && config.github.repo ? `${config.github.owner}/${config.github.repo}` : "";
-  proxyPassword.value = "";
-  proxyPasswordTouched.value = false;
-  proxyTestResult.value = null;
+  extraArgsText.value = config.compression.extraArgs.join(" ");
+  baseline.value = configFingerprint(draft.value, extraArgsText.value);
+  externalUpdate.value = false;
 }
+watch(() => store.boot?.config, (config, previous) => {
+  if (!config) return;
+  if (!draft.value || (!dirty.value && !locked.value)) syncDraft(config);
+  else if (previous && configFingerprint(config, config.compression.extraArgs.join(" ")) !== configFingerprint(previous, previous.compression.extraArgs.join(" "))) externalUpdate.value = true;
+}, { deep: true, immediate: true });
+watch(locked, (value) => { if (!value && !dirty.value) syncDraft(); });
+watch(dirty, (value) => {
+  store.settingsDirty = value;
+  if (!value) store.settingsReminder = "";
+  else savedNote.value = "";
+}, { immediate: true, flush: "sync" });
 
-watch(
-  () => store.boot?.config,
-  () => {
-    if (!draft.value || !dirty.value) syncDraft();
-  },
-  { deep: true },
-);
-
-onMounted(syncDraft);
-
-function setTab(tab: SettingsTab) {
-  store.settingsTab = tab;
-}
-
-function setMode(mode: Mode) {
-  if (!draft.value) return;
-  draft.value.mode = mode;
-  if (mode !== "local" && !store.boot?.github.connected) {
-    showToast("请先连接 GitHub 私有仓库", "warning");
-    openGitHubModal();
-  }
-}
-
-function cancelChanges() {
+function discard() {
+  if (locked.value) return;
   syncDraft();
-  showToast("已撤销未保存的修改");
+  failure.value = "";
+  savedNote.value = "已放弃修改，恢复为已保存的设置。";
 }
-
-function validate(): string {
-  const config = draft.value;
-  if (!config) return "设置尚未加载";
-  if (!/^(?:[a-zA-Z]:[\\/]|\\\\)/.test(config.backupDir)) return "本地备份目录必须是绝对路径";
-  if (config.retention.local < 1 || config.retention.local > 99) return "本地保留份数必须在 1 到 99 之间";
-  if (config.retention.cloud < 1 || config.retention.cloud > 99) return "云端保留份数必须在 1 到 99 之间";
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(config.schedule.time)) return "计划时间格式必须为 HH:MM";
-  if (config.mode !== "local" && !store.boot?.github.connected) return "云端模式需要先连接 GitHub";
-  if (config.mode !== "local" && !store.boot?.github.repo) return "请先在“云端”标签选择私有仓库";
-  if (config.proxy.mode === "manual") {
-    try {
-      const parsed = new URL(config.proxy.url);
-      if (!["http:", "https:", "socks5:", "socks5h:"].includes(parsed.protocol)) return "代理协议只支持 HTTP/HTTPS/SOCKS5";
-    } catch {
-      return "手动代理地址无效";
-    }
-  }
-  for (const arg of config.compression.extraArgs) {
-    if (!extraArgPatterns.some((pattern) => pattern.test(arg))) return `不允许的 7z 高级参数：${arg}`;
-  }
-  return "";
-}
-
 async function save() {
-  if (!draft.value) return;
-  draft.value.compression.extraArgs = extraArgsText.value.split(/\s+/).filter(Boolean);
-  const validationError = validate();
-  if (validationError) {
-    showToast(validationError, "error", 6000);
-    return;
-  }
-  const current = store.boot!.config;
-  draft.value.github.owner = current.github.owner;
-  draft.value.github.repo = current.github.repo;
-  draft.value.github.login = current.github.login;
-  draft.value.github.avatarUrl = current.github.avatarUrl;
-  draft.value.github.connectedAt = current.github.connectedAt;
-  draft.value.github.clientId = current.github.clientId;
-  draft.value.proxy.passwordSet = current.proxy.passwordSet;
-  draft.value.lastScheduledAt = current.lastScheduledAt;
+  if (!draft.value || locked.value || !dirty.value) return;
+  failure.value = validation.value;
+  if (failure.value) return;
+  const config = cloneConfig(draft.value);
+  config.backupDir = config.backupDir.trim();
+  config.compression.extraArgs = parseExtraArgs(extraArgsText.value);
+  config.lastScheduledAt = boot.value.config.lastScheduledAt;
+  failure.value = "";
+  savedNote.value = "";
   try {
-    await storeSaveConfig(cloneConfig(draft.value), proxyPasswordTouched.value ? proxyPassword.value : undefined);
-    syncDraft();
-  } catch {
-    // store 已提示错误
-  }
+    syncDraft(await saveConfig(config));
+    savedNote.value = "设置已保存，所有分类的修改均已生效。";
+  } catch (error) { failure.value = errorMessage(error); }
 }
-
 async function browseBackupDir() {
-  if (!draft.value) return;
-  const directory = await pickDirectory(draft.value.backupDir);
-  if (directory) draft.value.backupDir = directory;
+  if (!draft.value || locked.value) return;
+  browsing.value = true;
+  try { const directory = await pickDirectory(draft.value.backupDir); if (directory) draft.value.backupDir = directory; }
+  catch (error) { failure.value = errorMessage(error); }
+  finally { browsing.value = false; }
 }
-
-function goSecurity() {
-  setTab("security");
-}
-
-async function refreshRepos() {
-  repoLoading.value = true;
-  try {
-    repoList.value = await listRepos(repoQuery.value);
-  } finally {
-    repoLoading.value = false;
-  }
-}
-
-async function useRepo(fullName: string) {
-  if (!fullName.trim()) {
-    showToast("请输入 owner/repo", "warning");
-    return;
-  }
-  const ok = await selectRepo(fullName.trim());
-  if (ok) {
-    repoInput.value = fullName.trim();
-    repoList.value = [];
-  }
-}
-
-async function createNewRepo() {
-  if (!newRepoName.value.trim()) {
-    showToast("请输入新仓库名称", "warning");
-    return;
-  }
-  repoCreating.value = true;
-  try {
-    const repo = await createRepo(newRepoName.value.trim());
-    if (repo) {
-      await useRepo(repo.fullName);
-      newRepoName.value = "";
-    }
-  } finally {
-    repoCreating.value = false;
-  }
-}
-
-async function runProxyTest() {
-  if (!draft.value || proxyTesting.value) return;
-  proxyTesting.value = true;
-  try {
-    proxyTestResult.value = await testProxy({
-      mode: draft.value.proxy.mode,
-      url: draft.value.proxy.url,
-      username: draft.value.proxy.username,
-      password: proxyPassword.value,
-    });
-  } finally {
-    proxyTesting.value = false;
-  }
-}
-
-async function clearProxyPassword() {
-  await clearStoredProxyPassword();
-  proxyPassword.value = "";
-  proxyPasswordTouched.value = false;
-}
-
 async function showLogs() {
-  if (logLoading.value) return;
-  logLoading.value = true;
-  try {
-    logTail.value = await api.readLogTail(120);
-    if (!logTail.value) logTail.value = "（日志为空）";
-  } catch (error) {
-    showToast(errorMessage(error), "error");
-  } finally {
-    logLoading.value = false;
-  }
+  if (toolBusy.value) return;
+  toolBusy.value = true;
+  toolFailure.value = "";
+  try { logTail.value = await api.readLogTail(120) || "（日志为空）"; }
+  catch (error) { toolFailure.value = errorMessage(error); }
+  finally { toolBusy.value = false; }
 }
-
-function openDeveloperSettings() {
-  void openExternal("https://github.com/settings/developers");
+async function exportDiagnostics() {
+  if (toolBusy.value) return;
+  toolBusy.value = true;
+  toolFailure.value = "";
+  try { toolMessage.value = `诊断包已导出：${await api.exportDiagnostics()}`; }
+  catch (error) { toolFailure.value = errorMessage(error); }
+  finally { toolBusy.value = false; }
 }
-
-const keyIdShort = computed(() => {
-  const keyId = boot.value.key.keyId || "";
-  return keyId ? keyId.slice(0, 16) : "";
-});
-const encryptionForced = computed(() => draft.value?.mode !== "local");
 </script>
 
 <template>
-  <section class="page" :class="{ active: store.page === 'settings' }">
+  <section class="page settings-page" :class="{ active: store.page === 'settings' }">
     <div class="settings-lead">
-      <p>默认仅本地备份；云端功能是可选项，不影响本地使用。</p>
-      <span v-if="dirty" class="dirty-note"><span class="dirty-dot"></span>有未保存的修改</span>
+      <p>所有分类共用一份草稿，点击底部保存后统一生效。</p>
+      <span v-if="dirty" class="dirty-note">有未保存的修改</span>
     </div>
-
-    <div class="settings-tabs" role="tablist" aria-label="设置分类">
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        class="settings-tab"
-        :class="{ active: store.settingsTab === tab.id }"
-        role="tab"
-        @click="setTab(tab.id)"
-      >
-        {{ tab.label }}
-      </button>
+    <div class="settings-tabs" aria-label="设置分类">
+      <button v-for="tab in tabs" :key="tab.id" type="button" class="settings-tab" :class="{ active: store.settingsTab === tab.id }" :aria-pressed="store.settingsTab === tab.id" @click="store.settingsTab = tab.id">{{ tab.label }}</button>
     </div>
-
-    <template v-if="draft">
-      <div v-show="store.settingsTab === 'backup'" class="settings-panel" :class="{ active: store.settingsTab === 'backup' }">
-        <div class="card settings-card">
-          <div class="form-block">
-            <div class="form-row">
-              <div class="form-label">备份方式</div>
-              <div class="form-control">
-                <div class="mode-options">
-                  <button type="button" class="mode-option" :class="{ selected: draft.mode === 'local' }" @click="setMode('local')">
-                    <span class="mode-option-title">仅本地</span>
-                    <span class="mode-option-desc">完全离线</span>
-                  </button>
-                  <button type="button" class="mode-option" :class="{ selected: draft.mode === 'hybrid' }" @click="setMode('hybrid')">
-                    <span class="mode-option-title">本地 + GitHub</span>
-                    <span class="mode-option-desc">推荐的双副本</span>
-                  </button>
-                  <button type="button" class="mode-option" :class="{ selected: draft.mode === 'cloud' }" @click="setMode('cloud')">
-                    <span class="mode-option-title">仅 GitHub</span>
-                    <span class="mode-option-desc">没有本地副本</span>
-                  </button>
-                </div>
-                <p class="hint">云端模式需要先在“云端”标签连接 GitHub。仅 GitHub 不推荐。</p>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-label">本地备份目录</div>
-              <div class="form-control">
-                <div class="path-input">
-                  <input v-model="draft.backupDir" class="text-input mono" />
-                  <button class="btn btn-secondary btn-small" @click="browseBackupDir">浏览</button>
-                  <button class="btn btn-ghost btn-small" @click="openBackupFolder()">打开</button>
-                </div>
-                <p class="hint">便携版默认在应用目录下；更新/卸载不得删除此目录，建议另存一份离线副本。</p>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-label">备份范围</div>
-              <div class="form-control">
-                <label class="check-row">
-                  <input type="checkbox" checked aria-disabled="true" tabindex="-1" @click.prevent />
-                  <span><strong>DSH 核心数据</strong><small>凭据、会话、附件、插件、用量</small></span>
-                </label>
-                <label class="check-row">
-                  <input v-model="draft.includeDesktop" type="checkbox" />
-                  <span><strong>桌面登录态</strong><small>Cookies、Local Storage、窗口偏好</small></span>
-                </label>
-                <p class="hint">项目代码、日志和崩溃缓存不在备份范围内。</p>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-label">压缩等级</div>
-              <div class="form-control">
-                <div class="segmented">
-                  <button
-                    v-for="level in (['fast', 'balanced', 'max'] as CompressionLevel[])"
-                    :key="level"
-                    :class="{ active: draft.compression.level === level }"
-                    @click="draft.compression.level = level"
-                  >
-                    {{ level === "fast" ? "快速" : level === "max" ? "极限" : "均衡" }}
-                  </button>
-                </div>
-                <p class="hint">当前：{{ compressionLabel(draft.compression.level) }} · {{ compressionHints[draft.compression.level] }}</p>
-                <details class="advanced-block">
-                  <summary>高级压缩参数</summary>
-                  <div class="advanced-grid">
-                    <label>字典大小
-                      <select v-model.number="draft.compression.dictionaryMb" class="text-input select-input">
-                        <option :value="0">自动</option>
-                        <option :value="64">64 MB</option>
-                        <option :value="128">128 MB</option>
-                        <option :value="256">256 MB</option>
-                        <option :value="512">512 MB</option>
-                      </select>
-                    </label>
-                    <label>线程数
-                      <select v-model.number="draft.compression.threads" class="text-input select-input">
-                        <option :value="0">自动</option>
-                        <option :value="1">1</option>
-                        <option :value="2">2</option>
-                        <option :value="4">4</option>
-                        <option :value="8">8</option>
-                      </select>
-                    </label>
-                    <label class="advanced-wide">自定义参数
-                      <input v-model="extraArgsText" class="text-input mono" placeholder="例如 -mfb=273 -ms=on" />
-                    </label>
-                  </div>
-                  <p class="hint">参数直接传给 7za；使用参数数组，不经过 shell，非法或危险参数会被拒绝。</p>
-                </details>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-label">计划备份</div>
-              <div class="form-control">
-                <div class="inline-options">
-                  <label class="radio-inline"><input v-model="draft.schedule.kind" type="radio" value="manual" /> 手动</label>
-                  <label class="radio-inline"><input v-model="draft.schedule.kind" type="radio" value="daily" /> 每天</label>
-                  <label class="radio-inline"><input v-model="draft.schedule.kind" type="radio" value="weekly" /> 每周</label>
-                </div>
-                <div v-if="draft.schedule.kind !== 'manual'" class="inline-field schedule-fields">
-                  <input v-model="draft.schedule.time" class="text-input compact" type="time" />
-                  <select v-if="draft.schedule.kind === 'weekly'" v-model.number="draft.schedule.weekday" class="text-input select-input weekday-select">
-                    <option v-for="day in 7" :key="day" :value="day - 1">{{ weekdayLabel(day - 1) }}</option>
-                  </select>
-                  <span class="hint inline-hint">应用运行时才会触发；DSH 正在运行时会跳过。</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-label">保留份数</div>
-              <div class="form-control">
-                <div class="inline-field">
-                  <input v-model.number="draft.retention.local" class="text-input compact" type="number" min="1" max="99" />
-                  <span>份</span>
-                  <label class="check-row inline-check"><input v-model="draft.preRestoreSnapshot" type="checkbox" /> 恢复前自动备份当前数据</label>
-                </div>
-                <p class="hint">按时间保留最近 N 份普通快照；“恢复前快照”不计入自动清理。</p>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-label">本地加密</div>
-              <div class="form-control">
-                <div class="static-value">
-                  <span class="badge" :class="draft.encryptionLocal || draft.mode !== 'local' ? 'success' : 'muted'">
-                    {{ draft.encryptionLocal || draft.mode !== "local" ? "开启" : "关闭" }}
-                  </span>
-                  <span>加密设置与本地密钥在“安全”标签中管理。</span>
-                  <button class="text-button" @click="goSecurity">前往安全设置</button>
-                </div>
-                <p class="hint">默认关闭。若备份会放 U 盘、移动硬盘或网盘，建议开启。</p>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-label">备份后校验</div>
-              <div class="form-control">
-                <label class="switch-row">
-                  <span class="switch-copy">生成归档后运行 7z 完整性测试</span>
-                  <span class="switch">
-                    <input v-model="draft.verifyAfterBackup" type="checkbox" />
-                    <span class="switch-track"></span>
-                  </span>
-                </label>
-                <p class="hint">会增加一点耗时，但能在写入 manifest 前发现损坏。</p>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="settings-footer">
-          <button class="btn btn-ghost" @click="cancelChanges">撤销</button>
-          <button class="btn btn-primary" :disabled="store.saving" @click="save">{{ store.saving ? "保存中…" : "保存更改" }}</button>
-        </div>
-      </div>
-
-      <div v-show="store.settingsTab === 'cloud'" class="settings-panel" :class="{ active: store.settingsTab === 'cloud' }">
-        <div v-if="!boot.github.connected" class="card cloud-card">
-          <div class="cloud-icon">
-            <svg class="icon-lg"><use href="#i-cloud"></use></svg>
-          </div>
-          <h2>尚未连接 GitHub</h2>
-          <p>连接私有仓库后，可以把加密归档上传到 GitHub Releases。连接完全可选，不影响本地备份。</p>
-          <button class="btn btn-primary" @click="openGitHubModal()">连接 GitHub</button>
-          <p class="hint">使用系统浏览器完成 OAuth 授权；也可以在连接窗口使用 PAT 高级兜底。</p>
-        </div>
-
-        <template v-else>
-          <div class="card connected-card">
-            <div class="connection-row">
-              <div class="account-avatar">GH</div>
-              <div class="account-copy">
-                <strong>GitHub 已连接</strong>
-                <span>@{{ boot.github.login }} · token 保存在 Windows 凭据管理器</span>
-              </div>
-              <span class="badge success">已连接</span>
-              <button class="btn btn-ghost btn-small" @click="disconnectGitHub">断开连接</button>
-            </div>
-          </div>
-
-          <div class="card settings-card">
-            <div class="form-row">
-              <div class="form-label">私有仓库</div>
-              <div class="form-control">
-                <div class="static-value repo-current">
-                  <span class="mono">{{ boot.github.repo || "尚未选择仓库" }}</span>
-                  <span v-if="boot.github.repo" class="badge success">已配置</span>
-                  <span v-else class="badge muted">必需</span>
-                  <button v-if="boot.github.repo" class="text-button" @click="openGitHubRepo()">在 GitHub 打开</button>
-                </div>
-                <div class="path-input repo-input">
-                  <input v-model="repoInput" class="text-input mono" placeholder="owner/repo" />
-                  <button class="btn btn-secondary btn-small" @click="useRepo(repoInput)">使用此仓库</button>
-                  <button class="btn btn-secondary btn-small" :disabled="repoLoading" @click="refreshRepos">
-                    {{ repoLoading ? "读取中…" : "刷新私有仓库" }}
-                  </button>
-                </div>
-                <p class="hint">只使用 Releases 存放归档；仓库必须是私有仓库，并且当前账号有写入权限。</p>
-                <div v-if="repoList.length" class="repo-list">
-                  <button v-for="repo in repoList" :key="repo.id" class="repo-row" @click="useRepo(repo.fullName)">
-                    <span>
-                      <strong>{{ repo.fullName }}</strong>
-                      <small>{{ repo.defaultBranch || "无默认分支" }}</small>
-                    </span>
-                    <span class="badge" :class="repo.fullName === boot.github.repo ? 'success' : 'muted'">
-                      {{ repo.fullName === boot.github.repo ? "当前" : "选择" }}
-                    </span>
-                  </button>
-                </div>
-                <div class="path-input create-repo-row">
-                  <input v-model="newRepoName" class="text-input mono" placeholder="新私有仓库名称" />
-                  <button class="btn btn-secondary btn-small" :disabled="repoCreating" @click="createNewRepo">
-                    {{ repoCreating ? "创建中…" : "创建并选择" }}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-label">云端保留</div>
-              <div class="form-control">
-                <div class="inline-field">
-                  <input v-model.number="draft.retention.cloud" class="text-input compact" type="number" min="1" max="99" />
-                  <span>份</span>
-                  <span class="badge muted">上传成功后自动清理旧快照</span>
-                </div>
-                <p class="hint">GitHub Releases 单文件需小于 2 GiB；当前核心数据约 {{ formatBytes(store.boot?.dsh.sources.reduce((sum, source) => sum + (source.exists ? source.bytes : 0), 0)) }}。</p>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-label">OAuth App</div>
-              <div class="form-control">
-                <div class="static-value">
-                  <span class="mono">{{ boot.github.clientId || "未配置 Client ID" }}</span>
-                  <span class="badge" :class="boot.github.clientIdConfigured ? 'success' : 'muted'">
-                    {{ boot.github.clientIdConfigured ? "Device Flow 可用" : "仅 PAT" }}
-                  </span>
-                  <button class="text-button" @click="openDeveloperSettings">GitHub Developer settings</button>
-                </div>
-                <p class="hint">在连接窗口中填写 Client ID；PAT 作为高级兜底。凭据不会写入日志或配置文件。</p>
-              </div>
-            </div>
-
-            <div v-if="draft.mode === 'local'" class="cloud-mode-note">
-              <span class="alert-icon">!</span>
-              <div>
-                <strong>当前备份方式仍是仅本地</strong>
-                <span>仓库已配置，但不会自动上传。到“备份”标签切换为“本地 + GitHub”后生效。</span>
-                <button class="text-button" @click="setTab('backup')">去切换备份方式</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="settings-footer">
-            <button class="btn btn-ghost" @click="cancelChanges">撤销</button>
-            <button class="btn btn-primary" :disabled="store.saving" @click="save">{{ store.saving ? "保存中…" : "保存更改" }}</button>
-          </div>
-        </template>
-      </div>
-
-      <div v-show="store.settingsTab === 'network'" class="settings-panel" :class="{ active: store.settingsTab === 'network' }">
-        <div class="card settings-card">
+    <div v-if="draft" class="settings-scroll">
+      <p v-if="externalUpdate" class="hint">已保存的配置有更新。你的草稿未被覆盖；放弃修改可载入最新配置，保存则以当前草稿为准。</p>
+      <fieldset class="form-fieldset" :disabled="locked">
+        <div v-show="store.settingsTab === 'backup'" class="card settings-card">
           <div class="form-row">
-            <div class="form-label">代理模式</div>
+            <label class="form-label" for="backupDir">备份目录</label>
             <div class="form-control">
-              <div class="inline-options proxy-options">
-                <label class="radio-inline"><input v-model="draft.proxy.mode" type="radio" value="system" /> 系统代理</label>
-                <label class="radio-inline"><input v-model="draft.proxy.mode" type="radio" value="manual" /> 手动</label>
-                <label class="radio-inline"><input v-model="draft.proxy.mode" type="radio" value="off" /> 不使用</label>
+              <div class="path-input">
+                <input id="backupDir" v-model="draft.backupDir" class="text-input mono" />
+                <button class="btn btn-secondary btn-small" @click="browseBackupDir">{{ browsing ? "选择中…" : "浏览" }}</button>
+                <button class="btn btn-ghost btn-small" :disabled="directoryChanged" title="打开已保存的备份目录" @click="openBackupFolder()">打开</button>
               </div>
-              <p class="hint">只影响 GitHub API、上传和下载；仅本地备份不会初始化网络客户端。</p>
+              <p class="hint">打开的是已保存目录；目录有未保存修改时不可打开。更改目录不会迁移旧备份。</p>
+              <p class="hint">默认位于应用目录下，删除应用目录前请移走备份。</p>
             </div>
           </div>
-
-          <template v-if="draft.proxy.mode === 'manual'">
-            <div class="form-row">
-              <div class="form-label">手动代理</div>
-              <div class="form-control">
-                <div class="path-input">
-                  <input v-model="draft.proxy.url" class="text-input mono" placeholder="http://127.0.0.1:7897" />
-                  <button class="btn btn-secondary btn-small" :disabled="proxyTesting" @click="runProxyTest">
-                    {{ proxyTesting ? "测试中…" : "测试连接" }}
-                  </button>
-                </div>
-                <p class="hint" :class="{ success: proxyTestResult?.reachable, error: proxyTestResult && !proxyTestResult.reachable }">
-                  <template v-if="proxyTestResult">
-                    {{ proxyTestResult.reachable ? "代理连接正常" : "代理连接失败" }} · {{ proxyTestResult.message }}
-                    <template v-if="proxyTestResult.reachable"> · {{ proxyTestResult.latencyMs }} ms</template>
-                  </template>
-                  <template v-else>支持 http、https 和 socks5；GitHub API 与上传都会走同一代理。</template>
-                </p>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-label">代理认证</div>
-              <div class="form-control">
-                <div class="path-input proxy-auth">
-                  <input v-model="draft.proxy.username" class="text-input" placeholder="用户名（可选）" autocomplete="off" />
-                  <input
-                    v-model="proxyPassword"
-                    class="text-input"
-                    type="password"
-                    placeholder="密码（保存在凭据管理器）"
-                    autocomplete="new-password"
-                    @input="proxyPasswordTouched = true"
-                  />
-                  <button v-if="boot.proxyPassword" class="btn btn-ghost btn-small" @click="clearProxyPassword">清除已存密码</button>
-                </div>
-                <p class="hint">密码不会写入配置文件；代理测试会使用当前输入的密码或已保存的密码。</p>
-              </div>
-            </div>
-          </template>
-
           <div class="form-row">
-            <div class="form-label">绕过列表</div>
+            <div class="form-label">备份范围</div>
             <div class="form-control">
-              <label class="check-row">
-                <input v-model="draft.proxy.bypassLocal" type="checkbox" />
-                <span><strong>本地地址绕过代理</strong><small>localhost、127.0.0.1 和本地网络</small></span>
-              </label>
+              <div class="check-row"><span class="check-fixed" aria-hidden="true">&#10003;</span><span><strong>DSH 核心数据（必选）</strong><small>凭据、会话、附件、插件、用量</small></span></div>
+              <label class="check-row"><input v-model="draft.includeDesktop" type="checkbox" /><span><strong>包含桌面登录态</strong><small>Cookies、Local Storage、窗口偏好</small></span></label>
+              <p class="hint">项目代码、日志和崩溃缓存不在备份范围内。</p>
             </div>
           </div>
+          <div class="form-row">
+            <div class="form-label">压缩</div>
+            <div class="form-control">
+              <div class="segmented" role="group" aria-label="压缩等级">
+                <button v-for="level in (['fast', 'balanced', 'max'] as CompressionLevel[])" :key="level" :class="{ active: draft.compression.level === level }" :aria-pressed="draft.compression.level === level" @click="draft.compression.level = level">{{ compressionLabel(level) }}</button>
+              </div>
+              <p class="hint">均衡适合日常备份；极限压缩更慢、占用更多内存。</p>
+              <details class="advanced-block">
+                <summary>高级压缩参数</summary>
+                <div class="advanced-grid">
+                  <label>字典大小
+                    <select v-model.number="draft.compression.dictionaryMb" class="text-input select-input"><option :value="0">自动</option><option v-for="size in [16, 32, 64, 128, 256, 512, 1024]" :key="size" :value="size">{{ size }} MB</option></select>
+                  </label>
+                  <label>线程数（0 为自动）<input v-model.number="draft.compression.threads" type="number" min="0" max="64" class="text-input" /></label>
+                  <label class="advanced-wide">自定义参数<input v-model="extraArgsText" class="text-input mono" placeholder="例如 -mfb=273 -ms=on" :aria-invalid="!!argsError" aria-describedby="argsHint" /></label>
+                </div>
+                <p id="argsHint" class="hint" :class="{ error: argsError }">{{ argsError || '仅接受 -mx、-md、-mmt、-mfb、-ms、-mqs 白名单参数，不经过 shell。' }}</p>
+              </details>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-label">计划备份</div>
+            <div class="form-control">
+              <div class="inline-options">
+                <label class="radio-inline"><input v-model="draft.schedule.kind" type="radio" value="manual" />手动</label>
+                <label class="radio-inline"><input v-model="draft.schedule.kind" type="radio" value="daily" />每天</label>
+                <label class="radio-inline"><input v-model="draft.schedule.kind" type="radio" value="weekly" />每周</label>
+              </div>
+              <div v-if="draft.schedule.kind !== 'manual'" class="inline-field schedule-fields">
+                <input v-model="draft.schedule.time" class="text-input time-input" type="time" aria-label="计划备份时间" />
+                <select v-if="draft.schedule.kind === 'weekly'" v-model.number="draft.schedule.weekday" class="text-input weekday-select" aria-label="星期"><option v-for="day in 7" :key="day" :value="day - 1">{{ weekdayLabel(day - 1) }}</option></select>
+              </div>
+              <p class="hint">仅在本应用运行时触发；DSH 正在运行时跳过。</p>
+              <p class="hint">已生效：{{ scheduleLabel(boot.config.schedule.kind, boot.config.schedule.time, boot.config.schedule.weekday) }} · 下次：{{ formatDate(boot.schedule.nextRun) }} · 上次：{{ formatDate(boot.schedule.lastRun) }}</p>
+            </div>
+          </div>
+          <div class="form-row">
+            <label class="form-label" for="retention">保留份数</label>
+            <div class="form-control">
+              <div class="inline-field"><input id="retention" v-model.number="draft.retention.local" class="text-input compact" type="number" min="1" max="99" />份</div>
+              <p class="hint">保留最近 N 份普通备份，更旧的普通备份会被自动删除；恢复前快照不计入自动清理。</p>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-label">恢复保护</div>
+            <div class="form-control"><label class="check-row"><input v-model="draft.preRestoreSnapshot" type="checkbox" />默认在恢复前备份即将覆盖的现有数据</label><p class="hint">每次恢复时仍可确认是否启用。</p></div>
+          </div>
+          <div class="form-row">
+            <div class="form-label">备份后校验</div>
+            <div class="form-control"><label class="check-row"><input v-model="draft.verifyAfterBackup" type="checkbox" />生成归档后运行完整性测试</label><p class="hint">会增加耗时，建议开启。历史列表的“归档可用”不等于已通过完整性校验。</p></div>
+          </div>
         </div>
-        <div class="settings-footer">
-          <button class="btn btn-ghost" @click="cancelChanges">撤销</button>
-          <button class="btn btn-primary" :disabled="store.saving" @click="save">{{ store.saving ? "保存中…" : "保存更改" }}</button>
-        </div>
-      </div>
-
-      <div v-show="store.settingsTab === 'security'" class="settings-panel" :class="{ active: store.settingsTab === 'security' }">
-        <div class="card settings-card">
+        <div v-show="store.settingsTab === 'security'" class="card settings-card">
           <div class="form-row">
             <div class="form-label">本地加密</div>
             <div class="form-control">
-              <label class="switch-row">
-                <span class="switch-copy">
-                  加密本地归档
-                  <span class="info-icon" tabindex="0" data-tip="开启后在应用目录生成本地密钥对；每个归档使用随机密码加密，密码由公钥封装，恢复时用私钥解开。私钥文件丢失后无法恢复。">i</span>
-                </span>
-                <span class="switch">
-                  <input
-                    :checked="draft.encryptionLocal || encryptionForced"
-                    type="checkbox"
-                    :disabled="encryptionForced"
-                    @change="draft.encryptionLocal = ($event.target as HTMLInputElement).checked"
-                  />
-                  <span class="switch-track"></span>
-                </span>
-              </label>
-              <p class="hint">
-                {{ encryptionForced ? "云端模式强制加密；本地和云端共用同一份加密归档，关闭加密不会生效。" : "默认关闭。开启后会生成本地密钥；加密备份离开本机后受保护，私钥文件丢失则无法恢复。" }}
-              </p>
+              <label class="switch-row"><span class="switch-copy">加密本地归档</span><span class="switch"><input v-model="draft.encryptionLocal" type="checkbox" /><span class="switch-track"></span></span></label>
+              <p class="hint">默认关闭。开启后自动生成本地密钥；只影响之后新建的归档，不会重新加密已有备份。</p>
+              <div class="restore-warning"><p>私钥丢失后，加密备份无法恢复。请另存整个 data\keys 目录，并与备份分开保管。</p></div>
             </div>
           </div>
-
-          <div class="form-row">
-            <div class="form-label">云端加密</div>
-            <div class="form-control">
-              <div class="static-value">
-                <span class="badge success">始终开启</span>
-                <span>上传 GitHub 前，归档必须先在本地加密；私有仓库不等于端到端加密。</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-label">GitHub token</div>
-            <div class="form-control">
-              <div class="static-value">
-                <span class="badge" :class="boot.github.tokenPresent ? 'success' : 'muted'">{{ boot.github.tokenPresent ? "已保存" : "未连接" }}</span>
-                <span>token 保存在 Windows 凭据管理器，不写入应用配置或日志。</span>
-              </div>
-            </div>
-          </div>
-
           <div class="form-row">
             <div class="form-label">本地密钥</div>
             <div class="form-control">
-              <div class="static-value">
-                <span class="badge" :class="boot.key.exists ? 'success' : 'muted'">{{ boot.key.exists ? "已生成" : "未生成" }}</span>
-                <span v-if="boot.key.exists" class="mono">key id {{ keyIdShort }}…</span>
-                <span>密钥对位于 <span class="mono">data\keys</span>；开启加密后自动生成。</span>
-                <button class="btn btn-secondary btn-small" @click="openKeysFolder()">打开密钥目录</button>
-              </div>
-              <p v-if="boot.keyError" class="hint error">{{ boot.keyError }}</p>
-              <p class="hint">私钥丢失后加密备份无法恢复；换机恢复需要复制整个 data\keys 目录。应用不提供恢复密钥。</p>
+              <div class="static-value"><span class="badge" :class="boot.key.exists ? 'success' : 'muted'">{{ boot.key.exists ? '已生成' : '未生成' }}</span><span v-if="boot.key.keyId" class="mono">{{ boot.key.keyId }}</span><button class="btn btn-secondary btn-small" @click="openKeysFolder()">打开密钥目录</button></div>
+              <p class="hint mono">{{ boot.paths.keysDir }}</p><p v-if="boot.keyError || boot.key.error" class="hint error">{{ boot.keyError || boot.key.error }}</p>
+              <p class="hint">换机时需复制对应密钥目录。应用不能找回丢失的私钥。</p>
             </div>
           </div>
-
-          <div class="form-row">
-            <div class="form-label">7z 加密参数</div>
-            <div class="form-control">
-              <div class="static-value">
-                <span class="badge muted">AES-256</span>
-                <span class="badge muted">文件头加密</span>
-                <span>每个归档使用独立的随机密码；应用不记录密码到日志。</span>
-              </div>
-            </div>
-          </div>
+          <div class="form-row"><div class="form-label">加密参数</div><div class="form-control"><div class="static-value"><span class="badge muted">AES-256</span><span class="badge muted">文件头加密</span></div><p class="hint">每个归档使用独立随机密码，由公钥封装、私钥解开。密码不写入日志。</p></div></div>
         </div>
-        <div class="settings-footer">
-          <button class="btn btn-ghost" @click="cancelChanges">撤销</button>
-          <button class="btn btn-primary" :disabled="store.saving" @click="save">{{ store.saving ? "保存中…" : "保存更改" }}</button>
-        </div>
-      </div>
-
-      <div v-show="store.settingsTab === 'general'" class="settings-panel" :class="{ active: store.settingsTab === 'general' }">
-        <div class="card settings-card">
-          <div class="form-row">
-            <div class="form-label">语言</div>
-            <div class="form-control">
-              <select class="text-input select-input" disabled>
-                <option>简体中文（首版）</option>
-              </select>
-              <p class="hint">首版只提供简体中文界面。</p>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-label">主题</div>
-            <div class="form-control">
-              <select class="text-input select-input" disabled>
-                <option>浅色（首版）</option>
-              </select>
-              <p class="hint">深色主题不在首版范围内。</p>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-label">数据目录</div>
-            <div class="form-control">
-              <div class="path-input">
-                <input class="text-input mono" :value="boot.paths.dataDir" readonly />
-                <button class="btn btn-secondary btn-small" @click="openDataFolder()">打开</button>
-              </div>
-              <p class="hint">临时文件、日志和密钥都放在应用目录；本地备份成品在“备份”标签中单独设置。</p>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-label">计划任务</div>
-            <div class="form-control">
-              <div class="static-value">
-                <span class="badge" :class="draft.schedule.kind === 'manual' ? 'muted' : 'success'">
-                  {{ scheduleLabel(draft.schedule.kind, draft.schedule.time, draft.schedule.weekday) }}
-                </span>
-                <span v-if="boot.schedule.nextRun">下次：{{ formatDate(boot.schedule.nextRun) }}</span>
-                <span v-else>应用关闭时不会运行计划任务。</span>
-              </div>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-label">更新</div>
-            <div class="form-control">
-              <div class="static-value">
-                <span class="badge muted">便携版</span>
-                <span>请以新版本替换程序文件；更新流程不会删除 data 和 backups。</span>
-              </div>
-              <p class="hint">首版不提供自动更新和在线更新检查。</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div v-show="store.settingsTab === 'about'" class="settings-panel" :class="{ active: store.settingsTab === 'about' }">
-        <div class="card about-card">
-          <div class="about-mark"><img src="/icon.svg" alt="" /></div>
-          <div>
-            <h2>DSH Backup</h2>
-            <p class="about-version">v{{ boot.app.version }} · Windows · 便携版</p>
-          </div>
-          <span class="badge success">运行中</span>
-        </div>
+      </fieldset>
+      <div v-show="store.settingsTab === 'about'">
+        <div class="card about-card"><div class="about-mark"><img src="/icon.svg" alt="" /></div><div><h2>DSH Backup</h2><p class="about-version">v{{ boot.app.version }} · {{ boot.app.platform }} · 便携版</p></div></div>
         <div class="card settings-card">
           <div class="about-row"><span>构建时间</span><strong>{{ formatDate(boot.app.buildTime) }}</strong></div>
-          <div class="about-row"><span>平台</span><strong>{{ boot.app.platform }}</strong></div>
           <div class="about-row"><span>应用目录</span><strong class="mono">{{ boot.paths.appDir }}</strong></div>
-          <div class="about-row">
-            <span>压缩后端</span>
-            <strong>{{ boot.app.sevenZip.version || "不可用" }}</strong>
-          </div>
-          <div class="about-row">
-            <span>Rust sidecar</span>
-            <strong>{{ boot.app.sidecar.version || "不可用" }}</strong>
-          </div>
-          <div class="about-row"><span>备份范围</span><strong>DSH 核心数据 + 可选桌面登录态</strong></div>
-          <div class="about-row"><span>云端</span><strong>GitHub 私有仓库 Releases</strong></div>
-          <div class="about-row"><span>许可证</span><span>7-Zip LGPL 2.1+ · age MIT/Apache-2.0 · 本项目</span></div>
-          <div class="tool-grid">
-            <button class="btn btn-secondary btn-small" @click="exportDiagnostics()">导出诊断包</button>
-            <button class="btn btn-secondary btn-small" @click="openLogsFolder()">打开日志目录</button>
-            <button class="btn btn-secondary btn-small" :disabled="logLoading" @click="showLogs">
-              {{ logLoading ? "读取中…" : "查看最近日志" }}
-            </button>
-          </div>
+          <div class="about-row"><span>数据目录</span><strong class="mono">{{ boot.paths.dataDir }}</strong><button class="btn btn-secondary btn-small" @click="openDataFolder()">打开</button></div>
+          <div class="about-row"><span>压缩后端</span><strong>{{ boot.app.sevenZip.version || '不可用' }}</strong></div>
+          <p v-if="boot.app.sevenZip.error" class="hint error">{{ boot.app.sevenZip.error }}</p>
+          <div class="about-row"><span>Rust sidecar</span><strong>{{ boot.app.sidecar.version || '不可用' }}</strong></div>
+          <p v-if="boot.app.sidecar.error" class="hint error">{{ boot.app.sidecar.error }}</p>
+          <div class="about-row"><span>许可证</span><span>7-Zip LGPL 2.1+ · age MIT/Apache-2.0</span></div>
+          <div class="tool-grid"><button class="btn btn-secondary btn-small" :disabled="toolBusy || isBusy" @click="exportDiagnostics">导出诊断包</button><button class="btn btn-secondary btn-small" @click="openLogsFolder()">打开日志目录</button><button class="btn btn-secondary btn-small" :disabled="toolBusy" @click="showLogs">{{ toolBusy ? '处理中…' : '查看最近日志' }}</button></div>
+          <p v-if="toolFailure" class="inline-error" role="alert">{{ toolFailure }}</p><p v-if="toolMessage" class="hint path-wrap" role="status">{{ toolMessage }}</p>
           <pre v-if="logTail" class="log-preview">{{ logTail }}</pre>
-          <div class="about-notice">
-            诊断包包含配置、快照清单、工具版本和脱敏日志；不包含 token、代理密码、私钥、归档密码或 DSH 凭据内容。
-            7-Zip 使用 LGPL 2.1+ 许可证，随包携带 License.txt；本项目不解压不可信来源的归档。
-          </div>
+          <div class="about-notice">诊断包包含配置、快照清单、工具版本与脱敏日志，不包含私钥、归档密码或 DSH 凭据内容。分享前请自行检查。更新便携程序前，请保留 data、备份目录和密钥。</div>
         </div>
       </div>
-    </template>
+    </div>
+    <div class="settings-save-bar">
+      <p v-if="failure" class="inline-error" role="alert">{{ failure }}</p>
+      <p v-if="dirty && validation" class="hint error" role="status">{{ validation }}。修正后即可保存。</p>
+      <div class="settings-footer">
+        <span class="hint save-status" role="status">{{ locked ? '操作进行中，草稿已保留；完成后可继续编辑和保存。' : dirty ? '未保存，切换页面会保留草稿但不会生效。' : savedNote || '当前设置已保存' }}</span>
+        <button class="btn btn-ghost" :disabled="locked || !dirty" @click="discard">放弃修改</button>
+        <button class="btn btn-primary" :disabled="locked || !dirty || !!validation" @click="save">{{ store.saving ? '保存中…' : '保存设置' }}</button>
+      </div>
+    </div>
   </section>
 </template>

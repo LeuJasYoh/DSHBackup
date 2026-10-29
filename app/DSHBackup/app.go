@@ -16,7 +16,6 @@ import (
 	"DSHBackup/internal/apppath"
 	"DSHBackup/internal/backup"
 	"DSHBackup/internal/config"
-	"DSHBackup/internal/creds"
 	"DSHBackup/internal/logging"
 	"DSHBackup/internal/manifest"
 	"DSHBackup/internal/platform"
@@ -24,7 +23,7 @@ import (
 )
 
 var (
-	Version   = "1.0.0"
+	Version   = "1.1.0"
 	BuildTime = "dev"
 )
 
@@ -44,8 +43,9 @@ type App struct {
 	logger  *logging.Logger
 	sidecar *sidecar.Client
 
-	cfg   config.Config
-	cfgMu sync.RWMutex
+	cfg        config.Config
+	cfgMu      sync.RWMutex
+	cfgWriteMu sync.Mutex
 
 	sevenZipPath    string
 	sevenZipVersion string
@@ -59,17 +59,9 @@ type App struct {
 	taskMu sync.Mutex
 	active *activeTask
 
-	authMu     sync.Mutex
-	authCancel context.CancelFunc
-
 	schedulerStop chan struct{}
 	schedulerDone chan struct{}
 	stopOnce      sync.Once
-
-	cloudMu   sync.Mutex
-	cloudList []manifest.Snapshot
-	cloudAt   time.Time
-	cloudErr  string
 
 	sourceMu sync.Mutex
 	sources  []SourceInfo
@@ -97,9 +89,6 @@ func (a *App) startup(ctx context.Context) {
 	cfg, loadErr := config.Load(a.paths.ConfigFile(), a.paths.DefaultBackupDir)
 	if loadErr != nil {
 		a.initWarnings = append(a.initWarnings, "配置加载失败，已使用默认值："+loadErr.Error())
-	}
-	if cfg.GitHub.ClientID == "" {
-		cfg.GitHub.ClientID = strings.TrimSpace(os.Getenv("DSHBACKUP_GITHUB_CLIENT_ID"))
 	}
 	a.cfg = cfg
 
@@ -164,7 +153,6 @@ func (a *App) shutdown(_ context.Context) {
 		case <-time.After(2 * time.Second):
 		}
 	})
-	a.cancelGitHubAuth()
 	a.taskMu.Lock()
 	active := a.active
 	a.taskMu.Unlock()
@@ -229,10 +217,6 @@ func (a *App) setConfig(cfg config.Config) {
 
 func (a *App) GetBootstrap() (Bootstrap, error) {
 	cfg := a.configSnapshot()
-	cfg.Proxy.PasswordSet = creds.Exists(creds.ProxyPasswordTarget)
-	if cfg.GitHub.ClientID == "" {
-		cfg.GitHub.ClientID = strings.TrimSpace(os.Getenv("DSHBACKUP_GITHUB_CLIENT_ID"))
-	}
 	localSnapshots, warnings, scanErr := manifest.Scan(cfg.BackupDir)
 	if scanErr != nil {
 		warnings = append(warnings, "读取本地备份失败："+scanErr.Error())
@@ -240,14 +224,9 @@ func (a *App) GetBootstrap() (Bootstrap, error) {
 	if localSnapshots == nil {
 		localSnapshots = []manifest.Snapshot{}
 	}
-	cloudList, cloudErr := a.getCloudSnapshots(false)
-	if cloudList == nil {
-		cloudList = []manifest.Snapshot{}
-	}
-	merged := manifest.MergeLocalAndCloud(localSnapshots, cloudList)
 	var latest *manifest.Snapshot
-	if len(merged) > 0 {
-		value := merged[0]
+	if len(localSnapshots) > 0 {
+		value := localSnapshots[0]
 		latest = &value
 	}
 	keyInfo := sidecar.KeyInfo{}
@@ -285,35 +264,31 @@ func (a *App) GetBootstrap() (Bootstrap, error) {
 	}
 	warnings = append(warnings, a.initWarnings...)
 	warnings = append(warnings, scanWarnings(dsh)...)
-	if cloudErr != "" {
-		warnings = append(warnings, "云端快照读取失败："+cloudErr)
-	}
-	if cfg.Mode != config.ModeLocal {
-		if !creds.Exists(creds.GitHubTokenTarget) {
-			warnings = append(warnings, "当前是云端模式，但 GitHub token 缺失；请重新连接 GitHub 或改回仅本地")
-		} else if cfg.GitHub.FullRepo() == "" {
-			warnings = append(warnings, "当前是云端模式，但尚未选择 GitHub 私有仓库")
+	if !keyInfo.Exists {
+		hasEncrypted := false
+		for _, snapshot := range localSnapshots {
+			if snapshot.Encrypted {
+				hasEncrypted = true
+				break
+			}
+		}
+		if hasEncrypted {
+			warnings = append(warnings, "已有加密快照，但本地私钥不可用；请先恢复 data\\keys 目录，不会自动生成替代密钥")
+		} else if cfg.EncryptionLocal {
+			warnings = append(warnings, "加密已启用，但本地密钥尚未生成；下一次备份前会生成或提示恢复私钥")
 		}
 	}
-	if (cfg.EncryptionLocal || cfg.Mode != config.ModeLocal) && !keyInfo.Exists {
-		warnings = append(warnings, "加密已启用，但本地密钥尚未生成；下一次备份前会生成或提示恢复私钥")
-	}
-	githubStatus := a.gitHubStatus(cfg)
 	return Bootstrap{
 		Config:         cfg,
 		App:            a.appInfo(writable),
 		Paths:          a.pathsInfo(cfg),
 		DSH:            dsh,
 		LocalSnapshots: localSnapshots,
-		CloudSnapshots: cloudList,
-		CloudError:     cloudErr,
 		Latest:         latest,
 		Key:            keyInfo,
 		KeyError:       keyErr,
-		GitHub:         githubStatus,
 		Disk:           disk,
 		Schedule:       a.scheduleInfo(cfg),
-		ProxyPassword:  cfg.Proxy.PasswordSet,
 		Warnings:       dedupe(warnings),
 		LogsPath:       a.paths.LogsDir,
 	}, nil
@@ -352,21 +327,6 @@ func (a *App) pathsInfo(cfg config.Config) PathsInfo {
 		KeysDir:          a.paths.KeysDir,
 		BackupDir:        cfg.BackupDir,
 		DefaultBackupDir: a.paths.DefaultBackupDir,
-	}
-}
-
-func (a *App) gitHubStatus(cfg config.Config) GitHubStatus {
-	tokenPresent := creds.Exists(creds.GitHubTokenTarget)
-	return GitHubStatus{
-		Connected:          tokenPresent,
-		Login:              cfg.GitHub.Login,
-		AvatarURL:          cfg.GitHub.AvatarURL,
-		Repo:               cfg.GitHub.FullRepo(),
-		ClientID:           cfg.GitHub.ClientID,
-		ClientIDConfigured: cfg.GitHub.ClientID != "",
-		TokenPresent:       tokenPresent,
-		AutoUpload:         cfg.GitHub.AutoUpload,
-		ConnectedAt:        cfg.GitHub.ConnectedAt,
 	}
 }
 
@@ -481,81 +441,10 @@ func statSource(name, label, path string, excludeTop, excludeRel []string) Sourc
 	return info
 }
 
-func (a *App) getCloudSnapshots(force bool) ([]manifest.Snapshot, string) {
-	a.cloudMu.Lock()
-	cacheValid := !force && time.Since(a.cloudAt) < 30*time.Second && (len(a.cloudList) > 0 || a.cloudErr == "")
-	cached := append([]manifest.Snapshot{}, a.cloudList...)
-	cachedErr := a.cloudErr
-	a.cloudMu.Unlock()
-	if cacheValid {
-		return cached, cachedErr
-	}
-	cfg := a.configSnapshot()
-	if cfg.Mode == config.ModeLocal && !force {
-		return cached, cachedErr
-	}
-	if !creds.Exists(creds.GitHubTokenTarget) || cfg.GitHub.FullRepo() == "" {
-		a.cloudMu.Lock()
-		a.cloudList = nil
-		a.cloudAt = time.Now()
-		a.cloudErr = ""
-		a.cloudMu.Unlock()
-		return nil, ""
-	}
-	client, _, err := a.newGitHubClient(true)
-	if err != nil {
-		a.rememberCloudError(err)
-		return append([]manifest.Snapshot{}, cached...), err.Error()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	list, err := client.ListBackups(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo)
-	cancel()
-	if err != nil {
-		a.rememberCloudError(err)
-		return append([]manifest.Snapshot{}, cached...), err.Error()
-	}
-	a.cloudMu.Lock()
-	a.cloudList = list
-	a.cloudAt = time.Now()
-	a.cloudErr = ""
-	a.cloudMu.Unlock()
-	return append([]manifest.Snapshot{}, list...), ""
-}
-
-func (a *App) rememberCloudError(err error) {
-	a.cloudMu.Lock()
-	a.cloudAt = time.Now()
-	a.cloudErr = err.Error()
-	a.cloudMu.Unlock()
-	if a.logger != nil {
-		a.logger.Warn("github.list", "读取云端快照失败", map[string]any{"error": err.Error()})
-	}
-}
-
-func (a *App) invalidateCloudCache() {
-	a.cloudMu.Lock()
-	a.cloudAt = time.Time{}
-	a.cloudList = nil
-	a.cloudErr = ""
-	a.cloudMu.Unlock()
-}
-
 func (a *App) invalidateSourceCache() {
 	a.sourceMu.Lock()
 	a.sourceAt = time.Time{}
 	a.sourceMu.Unlock()
-}
-
-func (a *App) RefreshCloudSnapshots() ([]manifest.Snapshot, error) {
-	a.invalidateCloudCache()
-	list, errText := a.getCloudSnapshots(true)
-	if list == nil {
-		list = []manifest.Snapshot{}
-	}
-	if errText != "" {
-		return list, errors.New(errText)
-	}
-	return list, nil
 }
 
 func (a *App) CheckDSH() DSHStatus {

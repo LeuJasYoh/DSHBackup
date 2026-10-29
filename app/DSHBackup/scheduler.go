@@ -59,6 +59,8 @@ func (a *App) schedulerTick() {
 }
 
 func (a *App) markScheduled(at time.Time) {
+	a.cfgWriteMu.Lock()
+	defer a.cfgWriteMu.Unlock()
 	cfg := a.configSnapshot()
 	cfg.LastScheduledAt = at.Format(time.RFC3339)
 	if err := config.Save(a.paths.ConfigFile(), cfg); err != nil {

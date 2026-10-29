@@ -5,43 +5,19 @@ import TopBar from "./components/TopBar.vue";
 import ToastHost from "./components/ToastHost.vue";
 import OnboardingWizard from "./components/OnboardingWizard.vue";
 import RestoreModal from "./components/RestoreModal.vue";
-import GitHubModal from "./components/GitHubModal.vue";
 import ConfirmModal from "./components/ConfirmModal.vue";
 import HelpModal from "./components/HelpModal.vue";
 import DashboardView from "./views/DashboardView.vue";
 import HistoryView from "./views/HistoryView.vue";
 import SettingsView from "./views/SettingsView.vue";
-import { closeConfirm, closeGitHubModal, closeModals, dispose, init, retryLoad, store } from "./store";
+import { dispose, go, init, retryLoad, store } from "./store";
 
 const showOnboarding = computed(() => !!store.boot && !store.boot.config.onboardingComplete);
 const showSplash = computed(() => !store.ready && !store.boot);
 const bootFailed = computed(() => store.ready && !store.boot);
 
-function onKeydown(event: KeyboardEvent) {
-  if (event.key !== "Escape") return;
-  if (showOnboarding.value) return;
-  if (store.modals.confirm) {
-    closeConfirm();
-    return;
-  }
-  if (store.modals.github) {
-    closeGitHubModal();
-    return;
-  }
-  if (store.modals.restore || store.modals.help) {
-    closeModals();
-  }
-}
-
-onMounted(async () => {
-  window.addEventListener("keydown", onKeydown);
-  await init();
-});
-
-onUnmounted(() => {
-  window.removeEventListener("keydown", onKeydown);
-  dispose();
-});
+onMounted(init);
+onUnmounted(dispose);
 </script>
 
 <template>
@@ -67,10 +43,6 @@ onUnmounted(() => {
       <circle cx="12" cy="12" r="9"></circle>
       <path d="M9.6 9a2.5 2.5 0 1 1 4.2 1.9c-.9.7-1.8 1.2-1.8 2.6"></path>
       <path d="M12 17.4v.1"></path>
-    </symbol>
-    <symbol id="i-cloud" viewBox="0 0 24 24">
-      <path d="M6.7 18.2h11a3.8 3.8 0 0 0 .4-7.5A6 6 0 0 0 6.4 9.3a4.5 4.5 0 0 0 .3 8.9Z"></path>
-      <path d="M9 13.5h6"></path>
     </symbol>
     <symbol id="i-shield" viewBox="0 0 24 24">
       <path d="M12 3.5 19 6v5.4c0 4.4-2.8 7.7-7 9.1-4.2-1.4-7-4.7-7-9.1V6l7-2.5Z"></path>
@@ -137,6 +109,8 @@ onUnmounted(() => {
       <SidebarNav />
       <main class="main">
         <TopBar @help="store.modals.help = true" />
+        <div v-if="store.settingsReminder && store.settingsDirty && store.page !== 'settings'" class="shell-notice" role="status"><span>{{ store.settingsReminder }}</span><button class="text-button" @click="go('settings')">返回设置</button></div>
+        <div v-if="store.bootError" class="shell-notice error" role="alert"><span>状态刷新失败，当前显示上次读取的数据：{{ store.bootError }}</span><button class="text-button" :disabled="store.refreshing" @click="retryLoad()">重试刷新</button></div>
         <div class="content" id="content">
           <DashboardView />
           <HistoryView />
@@ -148,7 +122,6 @@ onUnmounted(() => {
 
   <OnboardingWizard v-if="showOnboarding" />
   <RestoreModal v-if="store.modals.restore" />
-  <GitHubModal v-if="store.modals.github" />
   <ConfirmModal v-if="store.modals.confirm" />
   <HelpModal v-if="store.modals.help" />
   <ToastHost />

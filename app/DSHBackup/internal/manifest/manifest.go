@@ -72,18 +72,9 @@ type Snapshot struct {
 	FileCount       int64  `json:"fileCount"`
 	TotalBytes      int64  `json:"totalBytes"`
 	Compression     string `json:"compression,omitempty"`
-	Location        string `json:"location"`
-	Source          string `json:"source"`
 	Status          string `json:"status"`
 	LocalPath       string `json:"localPath,omitempty"`
 	ManifestPath    string `json:"manifestPath,omitempty"`
-	CloudReleaseID  int64  `json:"cloudReleaseId,omitempty"`
-	CloudTag        string `json:"cloudTag,omitempty"`
-	CloudName       string `json:"cloudName,omitempty"`
-	CloudAssetID    int64  `json:"cloudAssetId,omitempty"`
-	CloudManifestID int64  `json:"cloudManifestAssetId,omitempty"`
-	CloudHTMLURL    string `json:"cloudHtmlUrl,omitempty"`
-	CloudSize       int64  `json:"cloudSize,omitempty"`
 }
 
 var idPattern = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}$`)
@@ -252,8 +243,7 @@ func FromManifest(value Manifest, archivePath, manifestPath string) Snapshot {
 		DesktopIncluded: value.DesktopIncluded,
 		FileCount:       value.Files.Files,
 		TotalBytes:      value.Files.Bytes,
-		Location:        "local",
-		Source:          "local",
+		Compression:     compressionLevel(value.Compressor.Args),
 		Status:          "ready",
 		LocalPath:       archivePath,
 		ManifestPath:    manifestPath,
@@ -266,83 +256,23 @@ func Sort(snapshots []Snapshot) {
 	})
 }
 
-const bodyMarkerPrefix = "<!-- DSH-BACKUP-MANIFEST:"
-const bodyMarkerSuffix = " -->"
-
-func EncodeReleaseBody(value Manifest) (string, error) {
-	raw, err := Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	encoded := base64.StdEncoding.EncodeToString(raw)
-	created, _ := time.Parse(time.RFC3339, value.CreatedAt)
-	summary := fmt.Sprintf(
-		"DSH Backup %s\n\n- 快照：`%s`\n- 大小：%.1f MB\n- 文件：%d\n- 加密：%s\n- 类型：%s\n\n此归档由 DSH Backup 上传，云端归档始终加密。\n\n%s%s%s",
-		created.Local().Format("2006-01-02 15:04:05"),
-		value.ID,
-		float64(value.Archive.Size)/1024/1024,
-		value.Files.Files,
-		map[bool]string{true: "是", false: "否"}[value.Encryption != nil && value.Encryption.Enabled],
-		value.Kind,
-		bodyMarkerPrefix,
-		encoded,
-		bodyMarkerSuffix,
-	)
-	return summary, nil
-}
-
-func DecodeReleaseBody(body string) (Manifest, error) {
-	start := strings.Index(body, bodyMarkerPrefix)
-	if start < 0 {
-		return Manifest{}, errors.New("release 描述中缺少备份 manifest")
-	}
-	start += len(bodyMarkerPrefix)
-	end := strings.Index(body[start:], bodyMarkerSuffix)
-	if end < 0 {
-		return Manifest{}, errors.New("release 描述中的 manifest 不完整")
-	}
-	raw, err := base64.StdEncoding.DecodeString(body[start : start+end])
-	if err != nil {
-		return Manifest{}, errors.New("release 描述中的 manifest 编码无效")
-	}
-	var value Manifest
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return Manifest{}, errors.New("release 描述中的 manifest 格式无效")
-	}
-	if err := Validate(value); err != nil {
-		return Manifest{}, err
-	}
-	return value, nil
-}
-
-func MergeLocalAndCloud(local, cloud []Snapshot) []Snapshot {
-	byID := make(map[string]Snapshot)
-	for _, snapshot := range local {
-		byID[snapshot.ID] = snapshot
-	}
-	for _, snapshot := range cloud {
-		if existing, ok := byID[snapshot.ID]; ok {
-			existing.Location = "both"
-			existing.Source = "both"
-			existing.CloudReleaseID = snapshot.CloudReleaseID
-			existing.CloudTag = snapshot.CloudTag
-			existing.CloudName = snapshot.CloudName
-			existing.CloudAssetID = snapshot.CloudAssetID
-			existing.CloudManifestID = snapshot.CloudManifestID
-			existing.CloudHTMLURL = snapshot.CloudHTMLURL
-			existing.CloudSize = snapshot.CloudSize
-			if existing.Status == "missing" {
-				existing.Status = "cloud-only"
-			}
-			byID[snapshot.ID] = existing
-		} else {
-			byID[snapshot.ID] = snapshot
+// 后出现的 -mx 覆盖前面的，取最后一个才能和 7z 的实际行为一致。
+func compressionLevel(args []string) string {
+	level := 0
+	for _, arg := range args {
+		var value int
+		if _, err := fmt.Sscanf(strings.ToLower(strings.TrimSpace(arg)), "-mx=%d", &value); err == nil {
+			level = value
 		}
 	}
-	merged := make([]Snapshot, 0, len(byID))
-	for _, snapshot := range byID {
-		merged = append(merged, snapshot)
+	switch {
+	case level >= 1 && level <= 3:
+		return "fast"
+	case level >= 4 && level <= 7:
+		return "balanced"
+	case level >= 8:
+		return "max"
+	default:
+		return ""
 	}
-	Sort(merged)
-	return merged
 }

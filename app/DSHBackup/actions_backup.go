@@ -8,91 +8,26 @@ import (
 	"time"
 
 	"DSHBackup/internal/backup"
-	"DSHBackup/internal/config"
-	"DSHBackup/internal/github"
 	"DSHBackup/internal/manifest"
 	"DSHBackup/internal/platform"
 	"DSHBackup/internal/sidecar"
 )
-
-type appCloud struct {
-	app    *App
-	client *github.Client
-	owner  string
-	repo   string
-}
-
-func (c *appCloud) UploadBackup(ctx context.Context, value manifest.Manifest, archivePath string, progress func(done, total int64)) (backup.CloudUploadResult, error) {
-	body, err := manifest.EncodeReleaseBody(value)
-	if err != nil {
-		return backup.CloudUploadResult{}, err
-	}
-	manifestBytes, err := manifest.Marshal(value)
-	if err != nil {
-		return backup.CloudUploadResult{}, err
-	}
-	created, _ := time.Parse(time.RFC3339, value.CreatedAt)
-	result, err := c.client.UploadBackup(ctx, github.UploadRequest{
-		Owner:         c.owner,
-		Repo:          c.repo,
-		Tag:           "backup-" + value.ID,
-		Name:          "DSH Backup " + created.Local().Format("2006-01-02 15:04:05"),
-		Body:          body,
-		ArchivePath:   archivePath,
-		ArchiveName:   value.Archive.Name,
-		ArchiveSize:   value.Archive.Size,
-		ArchiveSHA256: value.Archive.SHA256,
-		ManifestName:  manifest.ManifestPath(value.Archive.Name),
-		ManifestBytes: manifestBytes,
-	}, progress)
-	if err != nil {
-		return backup.CloudUploadResult{}, err
-	}
-	return backup.CloudUploadResult{
-		ReleaseID: result.ReleaseID,
-		Tag:       result.Tag,
-		HTMLURL:   result.HTMLURL,
-	}, nil
-}
-
-func (c *appCloud) DownloadBackup(ctx context.Context, snapshot manifest.Snapshot, destDir string, progress func(done, total int64)) (backup.CloudDownloadResult, error) {
-	if snapshot.CloudReleaseID == 0 {
-		return backup.CloudDownloadResult{}, errors.New("云端快照缺少 release ID")
-	}
-	result, err := c.client.DownloadBackup(ctx, c.owner, c.repo, snapshot.CloudReleaseID, destDir, progress)
-	if err != nil {
-		return backup.CloudDownloadResult{}, err
-	}
-	return backup.CloudDownloadResult{
-		ArchivePath:  result.ArchivePath,
-		ManifestPath: result.ManifestPath,
-		Manifest:     result.Manifest,
-		SHA256:       result.SHA256,
-		Size:         result.Size,
-	}, nil
-}
-
-func (c *appCloud) ApplyRetention(ctx context.Context, keep int) ([]string, error) {
-	return c.client.ApplyRetention(ctx, c.owner, c.repo, keep)
-}
-
-func (a *App) buildCloud() (*appCloud, error) {
-	cfg := a.configSnapshot()
-	if cfg.GitHub.FullRepo() == "" {
-		return nil, errors.New("请先选择或创建 GitHub 私有仓库")
-	}
-	client, _, err := a.newGitHubClient(true)
-	if err != nil {
-		return nil, err
-	}
-	return &appCloud{app: a, client: client, owner: cfg.GitHub.Owner, repo: cfg.GitHub.Repo}, nil
-}
 
 func (a *App) StartBackup(force bool) (string, error) {
 	return a.startBackup(force, manifest.KindManual)
 }
 
 func (a *App) startBackup(force bool, kind string) (string, error) {
+	taskID, ctx, err := a.beginTask("backup")
+	if err != nil {
+		return "", err
+	}
+	started := false
+	defer func() {
+		if !started {
+			a.finishTask(taskID)
+		}
+	}()
 	cfg := a.configSnapshot()
 	if !cfg.OnboardingComplete {
 		return "", errors.New("请先完成首次设置")
@@ -112,35 +47,20 @@ func (a *App) startBackup(force bool, kind string) (string, error) {
 			return "", fmt.Errorf("%s%s", runningPrefix, strings.Join(evidence, "；"))
 		}
 	}
-	if cfg.EncryptionLocal || cfg.Mode != config.ModeLocal {
-		keyCtx, keyCancel := context.WithTimeout(context.Background(), 40*time.Second)
+	if cfg.EncryptionLocal {
+		keyCtx, keyCancel := context.WithTimeout(ctx, 40*time.Second)
 		keyErr := a.ensureEncryptionReady(keyCtx, cfg, true)
 		keyCancel()
 		if keyErr != nil {
 			return "", keyErr
 		}
 	}
-	var cloud backup.Cloud
-	if cfg.Mode != config.ModeLocal {
-		adapter, err := a.buildCloud()
-		if err != nil {
-			return "", err
-		}
-		cloud = adapter
-	}
-	taskID, ctx, err := a.beginTask("backup")
-	if err != nil {
-		return "", err
-	}
 	manager := backup.NewManager(a.paths, a.sidecar, a.logger, a.sevenZipPath, a.sevenZipVersion, Version)
 	input := backup.BackupInput{
-		TaskID:       taskID,
-		Config:       cfg,
-		Kind:         kind,
-		Force:        force,
-		Cloud:        cloud,
-		CloudEnabled: cfg.Mode != config.ModeLocal,
-		KeepLocal:    cfg.Mode != config.ModeCloud,
+		TaskID: taskID,
+		Config: cfg,
+		Kind:   kind,
+		Force:  force,
 		OnProgress: func(progress backup.Progress) {
 			a.emitProgress(TaskProgress{
 				TaskID:     taskID,
@@ -153,6 +73,7 @@ func (a *App) startBackup(force bool, kind string) (string, error) {
 			})
 		},
 	}
+	started = true
 	go func() {
 		result, err := manager.Backup(ctx, input)
 		taskResult := TaskResult{TaskID: taskID, Kind: "backup"}
@@ -169,9 +90,7 @@ func (a *App) startBackup(force bool, kind string) (string, error) {
 			taskResult.Message = "备份完成"
 			taskResult.Snapshot = &snapshot
 			taskResult.Warnings = result.Warnings
-			taskResult.CloudError = result.CloudError
 		}
-		a.invalidateCloudCache()
 		a.finishTask(taskID)
 		a.emitTaskResult(taskResult)
 	}()
@@ -179,6 +98,16 @@ func (a *App) startBackup(force bool, kind string) (string, error) {
 }
 
 func (a *App) StartRestore(request RestoreRequest) (string, error) {
+	taskID, ctx, err := a.beginTask("restore")
+	if err != nil {
+		return "", err
+	}
+	started := false
+	defer func() {
+		if !started {
+			a.finishTask(taskID)
+		}
+	}()
 	cfg := a.configSnapshot()
 	if !cfg.OnboardingComplete {
 		return "", errors.New("请先完成首次设置")
@@ -189,7 +118,7 @@ func (a *App) StartRestore(request RestoreRequest) (string, error) {
 	if !a.sevenZipOK {
 		return "", errors.New(a.sevenZipError)
 	}
-	snapshot, err := a.resolveSnapshot(request.SnapshotID, request.Location)
+	snapshot, err := a.resolveSnapshot(request.SnapshotID)
 	if err != nil {
 		return "", err
 	}
@@ -202,25 +131,13 @@ func (a *App) StartRestore(request RestoreRequest) (string, error) {
 			return "", fmt.Errorf("%s%s", runningPrefix, strings.Join(evidence, "；"))
 		}
 	}
-	if request.PreRestoreSnapshot && (cfg.EncryptionLocal || cfg.Mode != config.ModeLocal) {
-		keyCtx, keyCancel := context.WithTimeout(context.Background(), 40*time.Second)
+	if request.PreRestoreSnapshot && cfg.EncryptionLocal {
+		keyCtx, keyCancel := context.WithTimeout(ctx, 40*time.Second)
 		keyErr := a.ensureEncryptionReady(keyCtx, cfg, true)
 		keyCancel()
 		if keyErr != nil {
 			return "", keyErr
 		}
-	}
-	var cloud backup.Cloud
-	if snapshot.Location == "cloud" || snapshot.LocalPath == "" {
-		adapter, err := a.buildCloud()
-		if err != nil {
-			return "", err
-		}
-		cloud = adapter
-	}
-	taskID, ctx, err := a.beginTask("restore")
-	if err != nil {
-		return "", err
 	}
 	manager := backup.NewManager(a.paths, a.sidecar, a.logger, a.sevenZipPath, a.sevenZipVersion, Version)
 	input := backup.RestoreInput{
@@ -231,7 +148,6 @@ func (a *App) StartRestore(request RestoreRequest) (string, error) {
 		PreRestoreSnapshot: request.PreRestoreSnapshot,
 		TargetDSH:          request.CustomTarget,
 		Force:              request.Force,
-		Cloud:              cloud,
 		OnProgress: func(progress backup.Progress) {
 			a.emitProgress(TaskProgress{
 				TaskID:     taskID,
@@ -244,6 +160,7 @@ func (a *App) StartRestore(request RestoreRequest) (string, error) {
 			})
 		},
 	}
+	started = true
 	go func() {
 		result, err := manager.Restore(ctx, input)
 		taskResult := TaskResult{TaskID: taskID, Kind: "restore"}
@@ -273,25 +190,23 @@ func (a *App) StartRestore(request RestoreRequest) (string, error) {
 }
 
 func (a *App) StartVerify(request VerifyRequest) (string, error) {
+	taskID, ctx, err := a.beginTask("verify")
+	if err != nil {
+		return "", err
+	}
+	started := false
+	defer func() {
+		if !started {
+			a.finishTask(taskID)
+		}
+	}()
 	if a.sidecar == nil {
 		return "", errors.New(a.sidecarError)
 	}
 	if !a.sevenZipOK {
 		return "", errors.New(a.sevenZipError)
 	}
-	snapshot, err := a.resolveSnapshot(request.SnapshotID, request.Location)
-	if err != nil {
-		return "", err
-	}
-	var cloud backup.Cloud
-	if snapshot.Location == "cloud" || snapshot.LocalPath == "" {
-		adapter, err := a.buildCloud()
-		if err != nil {
-			return "", err
-		}
-		cloud = adapter
-	}
-	taskID, ctx, err := a.beginTask("verify")
+	snapshot, err := a.resolveSnapshot(request.SnapshotID)
 	if err != nil {
 		return "", err
 	}
@@ -307,13 +222,9 @@ func (a *App) StartVerify(request VerifyRequest) (string, error) {
 			BytesTotal: progress.BytesTotal,
 		})
 	}
+	started = true
 	go func() {
-		var verifyErr error
-		if snapshot.Location == "cloud" || snapshot.LocalPath == "" {
-			verifyErr = manager.VerifyCloud(ctx, taskID, snapshot, cloud, onProgress)
-		} else {
-			verifyErr = manager.VerifyLocal(ctx, taskID, snapshot, onProgress)
-		}
+		verifyErr := manager.VerifyLocal(ctx, taskID, snapshot, onProgress)
 		taskResult := TaskResult{TaskID: taskID, Kind: "verify"}
 		if verifyErr != nil {
 			taskResult.Success = false
@@ -330,6 +241,11 @@ func (a *App) StartVerify(request VerifyRequest) (string, error) {
 }
 
 func (a *App) DeleteLocalSnapshot(id string) error {
+	taskID, ctx, err := a.beginTask("delete")
+	if err != nil {
+		return err
+	}
+	defer a.finishTask(taskID)
 	cfg := a.configSnapshot()
 	snapshots, _, err := manifest.Scan(cfg.BackupDir)
 	if err != nil {
@@ -349,68 +265,34 @@ func (a *App) DeleteLocalSnapshot(id string) error {
 		return errors.New(a.sidecarError)
 	}
 	manager := backup.NewManager(a.paths, a.sidecar, a.logger, a.sevenZipPath, a.sevenZipVersion, Version)
-	if err := manager.DeleteLocal(context.Background(), *target, cfg.BackupDir); err != nil {
+	if err := manager.DeleteLocal(ctx, *target, cfg.BackupDir); err != nil {
 		return err
 	}
 	if a.logger != nil {
 		a.logger.Info("snapshot.delete", "删除本地快照", map[string]any{"id": id})
 	}
-	a.invalidateCloudCache()
+	a.finishTask(taskID)
 	a.emitStateChanged("snapshot-delete")
 	return nil
 }
 
-func (a *App) DeleteCloudSnapshot(releaseID int64) error {
-	if releaseID == 0 {
-		return errors.New("release ID 无效")
-	}
-	adapter, err := a.buildCloud()
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	if err := adapter.client.DeleteBackup(ctx, adapter.owner, adapter.repo, releaseID); err != nil {
-		return err
-	}
-	if a.logger != nil {
-		a.logger.Info("snapshot.delete", "删除云端快照", map[string]any{"releaseId": releaseID})
-	}
-	a.invalidateCloudCache()
-	a.emitStateChanged("snapshot-delete")
-	return nil
-}
-
-func (a *App) resolveSnapshot(id, location string) (manifest.Snapshot, error) {
+func (a *App) resolveSnapshot(id string) (manifest.Snapshot, error) {
 	if strings.TrimSpace(id) == "" {
 		return manifest.Snapshot{}, errors.New("快照 ID 不能为空")
 	}
-	cfg := a.configSnapshot()
-	if location == "" || location == "local" || location == "both" {
-		local, _, err := manifest.Scan(cfg.BackupDir)
-		if err == nil {
-			for _, snapshot := range local {
-				if snapshot.ID == id && snapshot.Status == "ready" {
-					return snapshot, nil
-				}
-			}
-		}
+	local, _, err := manifest.Scan(a.configSnapshot().BackupDir)
+	if err != nil {
+		return manifest.Snapshot{}, fmt.Errorf("读取本地快照失败：%w", err)
 	}
-	if location == "local" {
-		return manifest.Snapshot{}, errors.New("本地快照不存在、文件缺失或大小不符，无法恢复")
-	}
-	cloud, errText := a.getCloudSnapshots(true)
-	if errText != "" {
-		return manifest.Snapshot{}, errors.New(errText)
-	}
-	for _, snapshot := range cloud {
+	for _, snapshot := range local {
 		if snapshot.ID == id {
-			if location == "cloud" || location == "both" || location == "" {
-				return snapshot, nil
+			if snapshot.Status != "ready" {
+				return manifest.Snapshot{}, errors.New("本地快照文件缺失或大小不符，无法恢复或验证")
 			}
+			return snapshot, nil
 		}
 	}
-	return manifest.Snapshot{}, errors.New("找不到该快照")
+	return manifest.Snapshot{}, errors.New("找不到本地快照")
 }
 
 func (a *App) checkDSHRunningForTask() (bool, []string, error) {
@@ -428,17 +310,4 @@ func (a *App) taskErrorMessage(err error) string {
 		return a.runningError(err).Error()
 	}
 	return err.Error()
-}
-
-func (a *App) CloudSnapshotByRelease(releaseID int64) (manifest.Snapshot, error) {
-	list, errText := a.getCloudSnapshots(false)
-	if errText != "" {
-		return manifest.Snapshot{}, errors.New(errText)
-	}
-	for _, snapshot := range list {
-		if snapshot.CloudReleaseID == releaseID {
-			return snapshot, nil
-		}
-	}
-	return manifest.Snapshot{}, errors.New("找不到云端快照")
 }

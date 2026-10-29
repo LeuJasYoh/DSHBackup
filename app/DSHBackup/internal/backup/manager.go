@@ -27,6 +27,7 @@ var (
 	DesktopExcludeTop = []string{
 		"Cache", "Code Cache", "GPUCache", "GrShaderCache", "DawnWebGPUCache",
 		"DawnGraphiteCache", "ShaderCache", "Dictionaries", "GPUPersistentCache",
+		"Crashpad",
 	}
 	DesktopExcludeRel = []string{"logs"}
 )
@@ -55,35 +56,12 @@ func IsRunning(err error) bool {
 	return errors.As(err, &target)
 }
 
-type CloudUploadResult struct {
-	ReleaseID int64
-	Tag       string
-	HTMLURL   string
-}
-
-type CloudDownloadResult struct {
-	ArchivePath  string
-	ManifestPath string
-	Manifest     manifest.Manifest
-	SHA256       string
-	Size         int64
-}
-
-type Cloud interface {
-	UploadBackup(ctx context.Context, value manifest.Manifest, archivePath string, progress func(done, total int64)) (CloudUploadResult, error)
-	DownloadBackup(ctx context.Context, snapshot manifest.Snapshot, destDir string, progress func(done, total int64)) (CloudDownloadResult, error)
-	ApplyRetention(ctx context.Context, keep int) ([]string, error)
-}
-
 type BackupInput struct {
-	TaskID       string
-	Config       config.Config
-	Kind         string
-	Force        bool
-	Cloud        Cloud
-	CloudEnabled bool
-	KeepLocal    bool
-	OnProgress   func(Progress)
+	TaskID     string
+	Config     config.Config
+	Kind       string
+	Force      bool
+	OnProgress func(Progress)
 }
 
 type BackupResult struct {
@@ -91,7 +69,6 @@ type BackupResult struct {
 	Manifest    manifest.Manifest
 	ArchivePath string
 	Warnings    []string
-	CloudError  string
 }
 
 type RestoreInput struct {
@@ -102,7 +79,6 @@ type RestoreInput struct {
 	PreRestoreSnapshot bool
 	TargetDSH          string
 	Force              bool
-	Cloud              Cloud
 	OnProgress         func(Progress)
 }
 
@@ -136,6 +112,10 @@ func NewManager(paths apppath.Paths, client *sidecar.Client, logger *logging.Log
 }
 
 func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, error) {
+	return m.backup(ctx, input, m.sources(input.Config), false)
+}
+
+func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidecar.StageRoot, protection bool) (BackupResult, error) {
 	if err := config.Validate(input.Config); err != nil {
 		return BackupResult{}, err
 	}
@@ -172,9 +152,6 @@ func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, 
 	if err := m.checkBackupDestination(input); err != nil {
 		return BackupResult{}, err
 	}
-	if input.CloudEnabled && input.Cloud == nil {
-		return BackupResult{}, errors.New("云端模式尚未连接 GitHub")
-	}
 
 	taskDir, err := m.paths.TempTaskDir(input.TaskID)
 	if err != nil {
@@ -186,9 +163,16 @@ func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, 
 		return BackupResult{}, err
 	}
 
-	sources := m.sources(input.Config)
 	if len(sources) == 0 {
+		if protection {
+			return BackupResult{}, nil
+		}
 		return BackupResult{}, errors.New("找不到可备份的 DSH 数据")
+	}
+	for _, source := range sources {
+		if isPathInside(input.Config.BackupDir, source.Source) || isPathInside(m.paths.TempDir, source.Source) {
+			return BackupResult{}, errors.New("备份源不能包含备份目录或应用临时目录")
+		}
 	}
 	report("precheck", 2, "扫描源目录", 0, 0)
 	stageResult, err := m.client.Stage(ctx, input.TaskID, stagingDir, sources, func(event sidecar.Progress) {
@@ -199,11 +183,20 @@ func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, 
 		return BackupResult{}, mapTaskError(err)
 	}
 	warnings := append([]string{}, stageResult.Warnings...)
-	stagedWarnings, err := m.verifyStaged(stageResult, input.Config.IncludeDesktop)
-	if err != nil {
-		return BackupResult{}, err
+	if protection {
+		if stageResult.Skipped > 0 || len(warnings) > 0 {
+			return BackupResult{}, errors.New("未能完整保护目标数据，请关闭占用文件的程序后重试：" + strings.Join(warnings, "；"))
+		}
+		if stageResult.Files == 0 {
+			return BackupResult{}, nil
+		}
+	} else {
+		stagedWarnings, err := m.verifyStaged(stageResult, input.Config.IncludeDesktop)
+		if err != nil {
+			return BackupResult{}, err
+		}
+		warnings = append(warnings, stagedWarnings...)
 	}
-	warnings = append(warnings, stagedWarnings...)
 
 	tempFree, err := platform.DiskFree(taskDir)
 	if err != nil {
@@ -213,26 +206,21 @@ func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, 
 	if tempFree.Free < required {
 		return BackupResult{}, fmt.Errorf("临时目录空间不足：需要至少 %s，可用 %s", formatBytes(int64(required)), formatBytes(int64(tempFree.Free)))
 	}
-	if input.KeepLocal {
-		if _, err := ensureWritableDir(input.Config.BackupDir); err != nil {
-			return BackupResult{}, fmt.Errorf("本地备份目录不可写：%w", err)
-		}
-		free, err := platform.DiskFree(input.Config.BackupDir)
-		if err != nil {
-			return BackupResult{}, fmt.Errorf("检查备份目录空间失败：%w", err)
-		}
-		if free.Free < required {
-			return BackupResult{}, fmt.Errorf("备份目录空间不足：需要至少 %s，可用 %s", formatBytes(int64(required)), formatBytes(int64(free.Free)))
-		}
+	free, err := platform.DiskFree(input.Config.BackupDir)
+	if err != nil {
+		return BackupResult{}, fmt.Errorf("检查备份目录空间失败：%w", err)
+	}
+	if free.Free < required {
+		return BackupResult{}, fmt.Errorf("备份目录空间不足：需要至少 %s，可用 %s", formatBytes(int64(required)), formatBytes(int64(free.Free)))
 	}
 
-	encrypted := input.Config.EncryptionLocal || input.CloudEnabled || input.Config.Mode != config.ModeLocal
+	encrypted := input.Config.EncryptionLocal
 	password := ""
 	manifestValue := manifest.Manifest{
 		SchemaVersion:   manifest.SchemaVersion,
 		Kind:            input.Kind,
 		AppVersion:      m.appVersion,
-		DesktopIncluded: input.Config.IncludeDesktop && m.sourceExists(m.paths.DesktopStateDir()),
+		DesktopIncluded: m.sourceExists(filepath.Join(stagingDir, "desktop-state")),
 		Files:           manifest.FileStats{Files: stageResult.Files, Bytes: stageResult.Bytes},
 		Compressor: manifest.CompressorInfo{
 			Name:    "7-Zip",
@@ -240,19 +228,17 @@ func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, 
 			Args:    sevenparams.BuildArgs(input.Config.Compression.Level, input.Config.Compression.DictionaryMB, input.Config.Compression.Threads, input.Config.Compression.ExtraArgs),
 		},
 	}
-	manifestValue.Scope = []string{"dsh"}
-	if manifestValue.DesktopIncluded {
-		manifestValue.Scope = append(manifestValue.Scope, "desktop-state")
+	for _, source := range sources {
+		if m.sourceExists(filepath.Join(stagingDir, source.Name)) {
+			manifestValue.Scope = append(manifestValue.Scope, source.Name)
+		}
 	}
 	hostname, _ := os.Hostname()
 	manifestValue.Hostname = hostname
 	created := time.Now().Truncate(time.Second)
-	id := manifest.NewID(created)
-	if input.KeepLocal {
-		id, created, err = uniqueID(input.Config.BackupDir, created)
-		if err != nil {
-			return BackupResult{}, err
-		}
+	id, created, err := uniqueID(input.Config.BackupDir, created)
+	if err != nil {
+		return BackupResult{}, err
 	}
 	manifestValue.ID = id
 	manifestValue.CreatedAt = created.Format(time.RFC3339)
@@ -312,7 +298,7 @@ func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, 
 	}
 
 	verified := false
-	if input.Config.VerifyAfterBackup {
+	if input.Config.VerifyAfterBackup || protection {
 		report("verify", 76.5, "校验归档完整性", 0, backupResult.Size)
 		testResult, err := m.client.TestArchive(ctx, input.TaskID, m.sevenZip, outputPath, password, func(event sidecar.Progress) {
 			report("verify", 76.5+clamp(event.Percent, 0, 100)*0.095, event.Message, event.BytesDone, event.BytesTotal)
@@ -329,105 +315,28 @@ func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, 
 		report("verify", 86, "已跳过完整性测试", backupResult.Size, backupResult.Size)
 	}
 
-	archivePath := outputPath
-	manifestPath := ""
-	if input.KeepLocal {
-		report("save", 87, "写入备份目录", backupResult.Size, backupResult.Size)
-		finalPath := filepath.Join(input.Config.BackupDir, manifestValue.Archive.Name)
-		if input.Config.BackupDir != "" {
-			if _, err := ensureWritableDir(input.Config.BackupDir); err != nil {
-				return BackupResult{}, err
-			}
-		}
-		free, err := platform.DiskFree(input.Config.BackupDir)
-		if err != nil {
-			return BackupResult{}, err
-		}
-		if free.Free < uint64(backupResult.Size)+16*1024*1024 {
-			return BackupResult{}, fmt.Errorf("备份目录空间不足以写入归档（可用 %s）", formatBytes(int64(free.Free)))
-		}
-		if err := moveFile(outputPath, finalPath); err != nil {
-			return BackupResult{}, fmt.Errorf("写入本地备份失败：%w", err)
-		}
-		archivePath = finalPath
-		manifestPath = manifest.ManifestPath(finalPath)
-		raw, err := manifest.Marshal(manifestValue)
-		if err != nil {
-			_ = os.Remove(finalPath)
-			return BackupResult{}, err
-		}
-		if err := os.WriteFile(manifestPath, raw, 0o600); err != nil {
-			_ = os.Remove(finalPath)
-			return BackupResult{}, fmt.Errorf("写入 manifest 失败：%w", err)
-		}
-	} else {
-		report("save", 87, "归档准备完成", backupResult.Size, backupResult.Size)
+	report("save", 87, "写入备份目录", backupResult.Size, backupResult.Size)
+	archivePath := filepath.Join(input.Config.BackupDir, manifestValue.Archive.Name)
+	manifestPath := manifest.ManifestPath(archivePath)
+	free, err = platform.DiskFree(input.Config.BackupDir)
+	if err != nil {
+		return BackupResult{}, err
+	}
+	if free.Free < uint64(backupResult.Size)+16*1024*1024 {
+		return BackupResult{}, fmt.Errorf("备份目录空间不足以写入归档（可用 %s）", formatBytes(int64(free.Free)))
+	}
+	if err := moveFile(outputPath, archivePath); err != nil {
+		return BackupResult{}, fmt.Errorf("写入本地备份失败：%w", err)
+	}
+	if err := manifest.Write(manifestPath, manifestValue); err != nil {
+		_ = os.Remove(archivePath)
+		return BackupResult{}, fmt.Errorf("写入备份清单失败：%w", err)
 	}
 
 	snapshot := manifest.FromManifest(manifestValue, archivePath, manifestPath)
 	snapshot.Encrypted = manifestValue.Encryption != nil && manifestValue.Encryption.Enabled
 	snapshot.Status = "ready"
-	cloudError := ""
-	if input.CloudEnabled && input.Cloud != nil {
-		report("upload", 88, "上传到 GitHub 私有仓库", 0, backupResult.Size)
-		uploadResult, err := input.Cloud.UploadBackup(ctx, manifestValue, archivePath, func(done, total int64) {
-			percent := 88.0
-			if total > 0 {
-				percent = 88 + (float64(done)/float64(total))*8
-			}
-			report("upload", percent, "上传加密归档", done, total)
-		})
-		if err != nil {
-			if ctx.Err() != nil {
-				return BackupResult{}, mapTaskError(err)
-			}
-			cloudError = err.Error()
-			warnings = append(warnings, "云端上传失败："+cloudError)
-			if !input.KeepLocal {
-				fallbackPath := filepath.Join(input.Config.BackupDir, manifestValue.Archive.Name)
-				if _, dirErr := ensureWritableDir(input.Config.BackupDir); dirErr == nil {
-					if moveErr := moveFile(archivePath, fallbackPath); moveErr == nil {
-						archivePath = fallbackPath
-						manifestPath = manifest.ManifestPath(fallbackPath)
-						raw, _ := manifest.Marshal(manifestValue)
-						if writeErr := os.WriteFile(manifestPath, raw, 0o600); writeErr == nil {
-							snapshot = manifest.FromManifest(manifestValue, archivePath, manifestPath)
-							snapshot.Status = "ready"
-							warnings = append(warnings, "云端失败后已在本机保留一份归档")
-						}
-					}
-				}
-			}
-			if m.logger != nil {
-				m.logger.Warn("backup.upload", "云端上传失败", map[string]any{"task": input.TaskID, "error": cloudError})
-			}
-		} else {
-			snapshot.CloudReleaseID = uploadResult.ReleaseID
-			snapshot.CloudTag = uploadResult.Tag
-			snapshot.CloudHTMLURL = uploadResult.HTMLURL
-			snapshot.CloudSize = backupResult.Size
-			if input.KeepLocal {
-				snapshot.Location = "both"
-				snapshot.Source = "both"
-			} else {
-				snapshot.Location = "cloud"
-				snapshot.Source = "cloud"
-				snapshot.LocalPath = ""
-				snapshot.ManifestPath = ""
-			}
-		}
-		report("cleanup", 97, "应用云端保留策略", 0, 0)
-		if cloudError == "" {
-			deleted, retentionErr := input.Cloud.ApplyRetention(ctx, input.Config.Retention.Cloud)
-			if retentionErr != nil {
-				warnings = append(warnings, "云端保留策略执行失败："+retentionErr.Error())
-			} else if len(deleted) > 0 {
-				warnings = append(warnings, "已按保留策略清理云端快照："+strings.Join(deleted, "、"))
-			}
-		}
-	}
-
-	if input.KeepLocal {
+	if input.Kind != manifest.KindPreRestore {
 		report("cleanup", 98, "应用本地保留策略", 0, 0)
 		deleted, err := m.applyLocalRetention(input.Config.BackupDir, input.Config.Retention.Local, manifestValue.ID)
 		if err != nil {
@@ -439,14 +348,12 @@ func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, 
 	report("done", 100, "备份完成", backupResult.Size, backupResult.Size)
 	if m.logger != nil {
 		m.logger.Info("backup.complete", "备份任务完成", map[string]any{
-			"task":       input.TaskID,
-			"id":         manifestValue.ID,
-			"size":       backupResult.Size,
-			"encrypted":  encrypted,
-			"cloud":      input.CloudEnabled,
-			"verified":   verified,
-			"desktop":    manifestValue.DesktopIncluded,
-			"cloudError": cloudError,
+			"task":      input.TaskID,
+			"id":        manifestValue.ID,
+			"size":      backupResult.Size,
+			"encrypted": encrypted,
+			"verified":  verified,
+			"desktop":   manifestValue.DesktopIncluded,
 		})
 	}
 	return BackupResult{
@@ -454,13 +361,28 @@ func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, 
 		Manifest:    manifestValue,
 		ArchivePath: archivePath,
 		Warnings:    dedupeWarnings(warnings),
-		CloudError:  cloudError,
 	}, nil
 }
 
 func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResult, error) {
-	if input.Snapshot.ID == "" {
-		return RestoreResult{}, errors.New("未选择要恢复的快照")
+	if input.Snapshot.ID == "" || input.Snapshot.LocalPath == "" {
+		return RestoreResult{}, errors.New("未选择可用的本地快照")
+	}
+	if input.TargetDSH != "" && input.IncludeDesktop {
+		return RestoreResult{}, errors.New("恢复到其他目录时不能同时覆盖系统桌面登录态")
+	}
+	targetDSH := input.TargetDSH
+	if targetDSH == "" {
+		targetDSH = m.paths.DSHDataDir()
+	}
+	if !filepath.IsAbs(targetDSH) {
+		return RestoreResult{}, errors.New("恢复目标必须是绝对路径")
+	}
+	targetDSH = filepath.Clean(targetDSH)
+	for _, protected := range []string{m.paths.AppDir, input.Config.BackupDir} {
+		if isPathInside(targetDSH, protected) || isPathInside(protected, targetDSH) {
+			return RestoreResult{}, errors.New("恢复目标不能覆盖应用、备份目录或它们的上级目录")
+		}
 	}
 	report := func(phase string, percent float64, message string, done, total int64) {
 		if input.OnProgress != nil {
@@ -483,63 +405,25 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 	}
 	defer os.RemoveAll(taskDir)
 
-	var archivePath string
-	var manifestPath string
-	var value manifest.Manifest
-	if input.Snapshot.Location == "cloud" || input.Snapshot.LocalPath == "" {
-		if input.Cloud == nil {
-			return RestoreResult{}, errors.New("该快照只存在于云端，请先连接 GitHub")
-		}
-		report("download", 2, "从 GitHub 下载归档", 0, 0)
-		download, err := input.Cloud.DownloadBackup(ctx, input.Snapshot, taskDir, func(done, total int64) {
-			percent := 2.0
-			if total > 0 {
-				percent = 2 + (float64(done)/float64(total))*36
-			}
-			report("download", percent, "下载云端归档", done, total)
-		})
-		if err != nil {
-			return RestoreResult{}, mapTaskError(err)
-		}
-		archivePath = download.ArchivePath
-		manifestPath = download.ManifestPath
-		value = download.Manifest
-		if input.Snapshot.SHA256 != "" && !strings.EqualFold(download.SHA256, input.Snapshot.SHA256) {
-			return RestoreResult{}, errors.New("下载的归档与快照记录的 SHA-256 不一致")
-		}
-	} else {
-		archivePath = input.Snapshot.LocalPath
-		manifestPath = input.Snapshot.ManifestPath
-		if manifestPath == "" {
-			manifestPath = manifest.ManifestPath(archivePath)
-		}
-		if _, err := os.Stat(archivePath); err != nil {
-			return RestoreResult{}, fmt.Errorf("归档不存在：%w", err)
-		}
-		value, err = manifest.Read(manifestPath)
-		if err != nil {
-			return RestoreResult{}, fmt.Errorf("读取本地 manifest 失败：%w", err)
-		}
-		if input.Snapshot.ID != value.ID {
-			return RestoreResult{}, errors.New("快照 ID 与 manifest 不一致")
-		}
-		report("download", 8, "校验本地归档哈希", 0, value.Archive.Size)
-		hash, err := m.client.HashFile(ctx, archivePath)
-		if err != nil {
-			return RestoreResult{}, err
-		}
-		if !strings.EqualFold(hash.SHA256, value.Archive.SHA256) {
-			return RestoreResult{}, errors.New("本地归档 SHA-256 校验失败，文件可能已损坏")
-		}
+	archivePath := input.Snapshot.LocalPath
+	manifestPath := input.Snapshot.ManifestPath
+	if manifestPath == "" {
+		manifestPath = manifest.ManifestPath(archivePath)
 	}
-	if value.ID == "" {
-		return RestoreResult{}, errors.New("manifest 无效")
+	value, err := manifest.Read(manifestPath)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("读取备份清单失败：%w", err)
 	}
-	if input.Snapshot.Location == "cloud" {
-		// 云端下载的 manifest 与快照记录保持一致性检查。
-		if input.Snapshot.SHA256 != "" && !strings.EqualFold(value.Archive.SHA256, input.Snapshot.SHA256) {
-			return RestoreResult{}, errors.New("云端 manifest 的 SHA-256 与快照记录不一致")
-		}
+	if input.Snapshot.ID != value.ID {
+		return RestoreResult{}, errors.New("快照 ID 与备份清单不一致")
+	}
+	report("precheck", 8, "校验本地归档哈希", 0, value.Archive.Size)
+	hash, err := m.client.HashFile(ctx, archivePath)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if !strings.EqualFold(hash.SHA256, value.Archive.SHA256) {
+		return RestoreResult{}, errors.New("归档 SHA-256 校验失败，文件可能已损坏")
 	}
 	password := ""
 	if value.Encryption != nil && value.Encryption.Enabled {
@@ -570,59 +454,63 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 	}
 	warnings := append([]string{}, extractResult.Warnings...)
 
+	var targets []sidecar.InstallTarget
+	if m.sourceExists(filepath.Join(extractDir, "dsh")) {
+		targets = append(targets, sidecar.InstallTarget{Name: "dsh", Path: targetDSH})
+	}
+	desktopRestored := input.IncludeDesktop && value.DesktopIncluded
+	if desktopRestored {
+		desktopDir := m.paths.DesktopStateDir()
+		if desktopDir == "" || !m.sourceExists(filepath.Join(extractDir, "desktop-state")) {
+			return RestoreResult{}, errors.New("桌面登录态的恢复源或目标不可用")
+		}
+		targets = append(targets, sidecar.InstallTarget{Name: "desktop-state", Path: desktopDir})
+	}
+	if len(targets) == 0 {
+		return RestoreResult{}, errors.New("该快照不包含所选的恢复内容")
+	}
 	var preSnapshot *manifest.Snapshot
 	if input.PreRestoreSnapshot {
-		report("snapshot", 70, "创建恢复前快照", 0, 0)
-		preResult, err := m.Backup(ctx, BackupInput{
-			TaskID:       input.TaskID + "-pre",
-			Config:       input.Config,
-			Kind:         manifest.KindPreRestore,
-			Force:        true,
-			KeepLocal:    true,
-			CloudEnabled: false,
+		var sources []sidecar.StageRoot
+		for _, target := range targets {
+			info, err := os.Stat(target.Path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return RestoreResult{}, fmt.Errorf("无法检查恢复目标：%w", err)
+			}
+			if !info.IsDir() {
+				return RestoreResult{}, errors.New("恢复目标不是目录：" + target.Path)
+			}
+			sources = append(sources, sidecar.StageRoot{Name: target.Name, Source: target.Path, ExcludeTop: []string{}, ExcludeRel: []string{}})
+		}
+		report("snapshot", 70, "备份即将覆盖的目标数据", 0, 0)
+		preResult, err := m.backup(ctx, BackupInput{
+			TaskID: input.TaskID + "-pre",
+			Config: input.Config,
+			Kind:   manifest.KindPreRestore,
+			Force:  true,
 			OnProgress: func(progress Progress) {
 				report("snapshot", 70+progress.Percent*0.10, "恢复前快照："+progress.Message, progress.BytesDone, progress.BytesTotal)
 			},
-		})
+		}, sources, true)
 		if err != nil {
 			return RestoreResult{}, fmt.Errorf("创建恢复前快照失败，已中止恢复：%w", err)
 		}
-		preSnapshot = &preResult.Snapshot
-		warnings = append(warnings, preResult.Warnings...)
+		if preResult.Snapshot.ID != "" {
+			preSnapshot = &preResult.Snapshot
+			warnings = append(warnings, preResult.Warnings...)
+		}
 	}
-
+	if err := ctx.Err(); err != nil {
+		return RestoreResult{}, err
+	}
 	if running, evidence, err := platform.IsDSHRunning(m.paths.DSHDataDir()); err == nil && running {
 		if !input.Force {
 			return RestoreResult{}, &RunningError{Evidence: evidence}
 		}
 		warnings = append(warnings, "恢复时检测到 DSH 仍在运行，文件覆盖可能不完整")
-	}
-
-	targetDSH := input.TargetDSH
-	if targetDSH == "" {
-		targetDSH = m.paths.DSHDataDir()
-	}
-	if !filepath.IsAbs(targetDSH) {
-		return RestoreResult{}, errors.New("恢复目标必须是绝对路径")
-	}
-	if isPathInside(targetDSH, m.paths.TempDir) {
-		return RestoreResult{}, errors.New("恢复目标不能位于临时目录")
-	}
-	if err := os.MkdirAll(targetDSH, 0o755); err != nil {
-		return RestoreResult{}, fmt.Errorf("无法创建恢复目标：%w", err)
-	}
-	targets := []sidecar.InstallTarget{{Name: "dsh", Path: targetDSH}}
-	desktopRestored := false
-	if input.IncludeDesktop && value.DesktopIncluded {
-		desktopDir := m.paths.DesktopStateDir()
-		if desktopDir == "" {
-			warnings = append(warnings, "无法确定桌面状态目录，已跳过桌面登录态")
-		} else {
-			targets = append(targets, sidecar.InstallTarget{Name: "desktop-state", Path: desktopDir})
-			desktopRestored = true
-		}
-	} else if input.IncludeDesktop && !value.DesktopIncluded {
-		warnings = append(warnings, "该快照不包含桌面登录态，已跳过")
 	}
 	report("install", 82, "覆盖恢复文件", 0, 0)
 	installResult, err := m.client.InstallStaging(ctx, input.TaskID, extractDir, targets, func(event sidecar.Progress) {
@@ -708,54 +596,6 @@ func (m *Manager) VerifyLocal(ctx context.Context, taskID string, snapshot manif
 	return nil
 }
 
-func (m *Manager) VerifyCloud(ctx context.Context, taskID string, snapshot manifest.Snapshot, cloud Cloud, onProgress func(Progress)) error {
-	if cloud == nil {
-		return errors.New("云端未连接")
-	}
-	taskDir, err := m.paths.TempTaskDir("verify-" + taskID)
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(taskDir)
-	download, err := cloud.DownloadBackup(ctx, snapshot, taskDir, func(done, total int64) {
-		if onProgress != nil {
-			percent := 2.0
-			if total > 0 {
-				percent = 2 + (float64(done)/float64(total))*58
-			}
-			onProgress(Progress{Phase: "download", Percent: percent, Message: "下载云端归档", BytesDone: done, BytesTotal: total})
-		}
-	})
-	if err != nil {
-		return err
-	}
-	password := ""
-	if download.Manifest.Encryption != nil && download.Manifest.Encryption.Enabled {
-		password, err = m.client.UnwrapPassword(ctx, m.paths.KeysDir, download.Manifest.Encryption.WrappedPassword)
-		if err != nil {
-			return err
-		}
-	}
-	if onProgress != nil {
-		onProgress(Progress{Phase: "verify", Percent: 65, Message: "测试归档完整性"})
-	}
-	testResult, err := m.client.TestArchive(ctx, taskID, m.sevenZip, download.ArchivePath, password, func(event sidecar.Progress) {
-		if onProgress != nil {
-			onProgress(Progress{Phase: "verify", Percent: 65 + clamp(event.Percent, 0, 100)*0.34, Message: event.Message})
-		}
-	})
-	if err != nil {
-		return err
-	}
-	if !testResult.OK {
-		return errors.New("云端归档完整性测试未通过")
-	}
-	if onProgress != nil {
-		onProgress(Progress{Phase: "done", Percent: 100, Message: "云端备份验证通过"})
-	}
-	return nil
-}
-
 func (m *Manager) DeleteLocal(_ context.Context, snapshot manifest.Snapshot, backupDir string) error {
 	if snapshot.LocalPath == "" || snapshot.ManifestPath == "" {
 		return errors.New("快照没有本地文件")
@@ -824,21 +664,13 @@ func (m *Manager) checkBackupDestination(input BackupInput) error {
 	if _, err := os.Stat(m.sevenZip); err != nil {
 		return fmt.Errorf("7za.exe 不可用：%w", err)
 	}
-	if input.KeepLocal {
-		if _, err := ensureWritableDir(input.Config.BackupDir); err != nil {
-			return fmt.Errorf("本地备份目录不可写：%w", err)
+	for _, source := range []string{m.paths.DSHDataDir(), m.paths.DesktopStateDir(), m.paths.DataDir} {
+		if isPathInside(input.Config.BackupDir, source) {
+			return errors.New("备份目录不能位于 DSH 数据或应用 data 目录内")
 		}
-		dshDir := m.paths.DSHDataDir()
-		if isPathInside(input.Config.BackupDir, dshDir) {
-			return errors.New("本地备份目录不能位于 .dsh 目录内")
-		}
-		desktopDir := m.paths.DesktopStateDir()
-		if desktopDir != "" && isPathInside(input.Config.BackupDir, desktopDir) {
-			return errors.New("本地备份目录不能位于桌面登录态目录内")
-		}
-		if isPathInside(input.Config.BackupDir, m.paths.DataDir) {
-			return errors.New("本地备份目录不能位于应用 data 目录内")
-		}
+	}
+	if _, err := ensureWritableDir(input.Config.BackupDir); err != nil {
+		return fmt.Errorf("本地备份目录不可写：%w", err)
 	}
 	return nil
 }

@@ -83,11 +83,10 @@ func TestEncryptedBackupVerifyRestore(t *testing.T) {
 	manager := backup.NewManager(paths, client, nil, sevenZip, "7-Zip (test)", "test")
 	var phases []string
 	result, err := manager.Backup(context.Background(), backup.BackupInput{
-		TaskID:    "test-backup",
-		Config:    cfg,
-		Kind:      manifest.KindManual,
-		Force:     true,
-		KeepLocal: true,
+		TaskID: "test-backup",
+		Config: cfg,
+		Kind:   manifest.KindManual,
+		Force:  true,
 		OnProgress: func(progress backup.Progress) {
 			if len(phases) == 0 || phases[len(phases)-1] != progress.Phase {
 				phases = append(phases, progress.Phase)
@@ -121,11 +120,17 @@ func TestEncryptedBackupVerifyRestore(t *testing.T) {
 
 	writeFile(t, filepath.Join(desktop, "Local State"), `{"changed":true}`)
 	customTarget := filepath.Join(base, "restore-target")
+	writeFile(t, filepath.Join(customTarget, "old.txt"), "existing target data")
+	if _, err := manager.Restore(context.Background(), backup.RestoreInput{
+		TaskID: "test-restore-invalid", Config: cfg, Snapshot: result.Snapshot, IncludeDesktop: true, TargetDSH: customTarget, Force: true,
+	}); err == nil {
+		t.Fatal("custom target must not restore the system desktop state")
+	}
 	restore, err := manager.Restore(context.Background(), backup.RestoreInput{
 		TaskID:             "test-restore",
 		Config:             cfg,
 		Snapshot:           result.Snapshot,
-		IncludeDesktop:     true,
+		IncludeDesktop:     false,
 		PreRestoreSnapshot: true,
 		TargetDSH:          customTarget,
 		Force:              true,
@@ -136,19 +141,56 @@ func TestEncryptedBackupVerifyRestore(t *testing.T) {
 	if restore.PreRestoreSnapshot == nil {
 		t.Fatal("pre-restore snapshot missing")
 	}
+	preManifest, err := manifest.Read(restore.PreRestoreSnapshot.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preManifest.Scope) != 1 || preManifest.Scope[0] != "dsh" || preManifest.DesktopIncluded {
+		t.Fatalf("pre-restore snapshot should protect only the custom target: %+v", preManifest)
+	}
 	content, err := os.ReadFile(filepath.Join(customTarget, ".credentials.yaml"))
 	if err != nil || string(content) != "api_key: test-secret\n" {
 		t.Fatalf("restored credentials mismatch: %v %q", err, string(content))
 	}
 	desktopContent, err := os.ReadFile(filepath.Join(desktop, "Local State"))
-	if err != nil || string(desktopContent) != `{"os_crypt":{}}` {
-		t.Fatalf("desktop Local State not restored: %v %q", err, string(desktopContent))
+	if err != nil || string(desktopContent) != `{"changed":true}` {
+		t.Fatalf("desktop Local State must stay untouched: %v %q", err, string(desktopContent))
 	}
 	if _, err := os.Stat(filepath.Join(customTarget, "logs", "ignored.log")); !os.IsNotExist(err) {
 		t.Fatal("excluded logs should not be restored")
 	}
 	if _, err := os.Stat(filepath.Join(customTarget, "sessions", "a.json")); err != nil {
 		t.Fatal("session missing after restore")
+	}
+	if _, err := os.Stat(filepath.Join(customTarget, "old.txt")); err != nil {
+		t.Fatal("restore must not delete unrelated files in the target")
+	}
+
+	writeFile(t, filepath.Join(dsh, ".credentials.yaml"), "api_key: changed\n")
+	defaultRestore, err := manager.Restore(context.Background(), backup.RestoreInput{
+		TaskID:             "test-restore-default",
+		Config:             cfg,
+		Snapshot:           result.Snapshot,
+		IncludeDesktop:     true,
+		PreRestoreSnapshot: true,
+		Force:              true,
+	})
+	if err != nil {
+		t.Fatalf("default restore failed: %v", err)
+	}
+	if !defaultRestore.DesktopRestored {
+		t.Fatal("default restore should include desktop state")
+	}
+	defaultPre, err := manifest.Read(defaultRestore.PreRestoreSnapshot.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !defaultPre.DesktopIncluded {
+		t.Fatal("pre-restore snapshot must protect the desktop state being overwritten")
+	}
+	restoredDesktop, err := os.ReadFile(filepath.Join(desktop, "Local State"))
+	if err != nil || string(restoredDesktop) != `{"os_crypt":{}}` {
+		t.Fatalf("desktop Local State not restored: %v %q", err, string(restoredDesktop))
 	}
 
 	deleteTarget, _, err := manifest.Scan(paths.DefaultBackupDir)

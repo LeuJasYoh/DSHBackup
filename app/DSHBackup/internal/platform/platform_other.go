@@ -16,7 +16,3 @@ func DiskFree(_ string) (DiskStatus, error) {
 func IsDSHRunning(_ string) (bool, []string, error) {
 	return false, nil, nil
 }
-
-func SystemProxy() (string, error) {
-	return "", nil
-}

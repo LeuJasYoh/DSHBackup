@@ -8,11 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/registry"
 )
 
 type DiskStatus struct {
@@ -109,53 +107,4 @@ func processNames() ([]string, error) {
 		}
 	}
 	return names, nil
-}
-
-func SystemProxy() (string, error) {
-	key, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Internet Settings`, registry.QUERY_VALUE)
-	if err != nil {
-		return "", err
-	}
-	defer key.Close()
-	enabled, _, err := key.GetIntegerValue("ProxyEnable")
-	if err != nil && !errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
-		return "", err
-	}
-	if enabled == 0 {
-		return "", nil
-	}
-	server, _, err := key.GetStringValue("ProxyServer")
-	if err != nil {
-		if errors.Is(err, syscall.ERROR_FILE_NOT_FOUND) {
-			return "", nil
-		}
-		return "", err
-	}
-	server = strings.TrimSpace(server)
-	if server == "" {
-		return "", nil
-	}
-	if strings.Contains(server, "=") {
-		parts := strings.Split(server, ";")
-		chosen := ""
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			lower := strings.ToLower(part)
-			if strings.HasPrefix(lower, "https=") {
-				chosen = strings.TrimSpace(part[len("https="):])
-				break
-			}
-			if chosen == "" && (strings.HasPrefix(lower, "http=") || strings.HasPrefix(lower, "socks=")) {
-				chosen = strings.TrimSpace(part[strings.Index(part, "=")+1:])
-			}
-		}
-		server = chosen
-	}
-	if server == "" {
-		return "", nil
-	}
-	if !strings.Contains(server, "://") {
-		server = "http://" + server
-	}
-	return server, nil
 }

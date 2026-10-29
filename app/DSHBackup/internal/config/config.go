@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,14 +14,6 @@ import (
 )
 
 const SchemaVersion = 1
-
-type Mode string
-
-const (
-	ModeLocal  Mode = "local"
-	ModeHybrid Mode = "hybrid"
-	ModeCloud  Mode = "cloud"
-)
 
 type ScheduleKind string
 
@@ -47,38 +38,11 @@ type Schedule struct {
 
 type Retention struct {
 	Local int `json:"local"`
-	Cloud int `json:"cloud"`
-}
-
-type GitHub struct {
-	ClientID    string `json:"clientId"`
-	Login       string `json:"login"`
-	AvatarURL   string `json:"avatarUrl"`
-	Owner       string `json:"owner"`
-	Repo        string `json:"repo"`
-	ConnectedAt string `json:"connectedAt"`
-	AutoUpload  bool   `json:"autoUpload"`
-}
-
-func (g GitHub) FullRepo() string {
-	if g.Owner == "" || g.Repo == "" {
-		return ""
-	}
-	return g.Owner + "/" + g.Repo
-}
-
-type Proxy struct {
-	Mode        string `json:"mode"`
-	URL         string `json:"url"`
-	Username    string `json:"username"`
-	BypassLocal bool   `json:"bypassLocal"`
-	PasswordSet bool   `json:"passwordSet"`
 }
 
 type Config struct {
 	SchemaVersion      int         `json:"schemaVersion"`
 	OnboardingComplete bool        `json:"onboardingComplete"`
-	Mode               Mode        `json:"mode"`
 	BackupDir          string      `json:"backupDir"`
 	IncludeDesktop     bool        `json:"includeDesktop"`
 	EncryptionLocal    bool        `json:"encryptionLocal"`
@@ -87,8 +51,6 @@ type Config struct {
 	Retention          Retention   `json:"retention"`
 	PreRestoreSnapshot bool        `json:"preRestoreSnapshot"`
 	VerifyAfterBackup  bool        `json:"verifyAfterBackup"`
-	GitHub             GitHub      `json:"github"`
-	Proxy              Proxy       `json:"proxy"`
 	LastScheduledAt    string      `json:"lastScheduledAt"`
 }
 
@@ -98,7 +60,6 @@ func Default(defaultBackupDir string) Config {
 	return Config{
 		SchemaVersion:      SchemaVersion,
 		OnboardingComplete: false,
-		Mode:               ModeLocal,
 		BackupDir:          defaultBackupDir,
 		IncludeDesktop:     true,
 		EncryptionLocal:    false,
@@ -115,18 +76,9 @@ func Default(defaultBackupDir string) Config {
 		},
 		Retention: Retention{
 			Local: 7,
-			Cloud: 7,
 		},
 		PreRestoreSnapshot: true,
 		VerifyAfterBackup:  true,
-		GitHub: GitHub{
-			AutoUpload: true,
-		},
-		Proxy: Proxy{
-			Mode:        "system",
-			URL:         "http://127.0.0.1:7897",
-			BypassLocal: true,
-		},
 	}
 }
 
@@ -153,9 +105,6 @@ func (c *Config) Normalize(defaultBackupDir string) {
 	if c.BackupDir == "" {
 		c.BackupDir = defaultBackupDir
 	}
-	if c.Mode == "" {
-		c.Mode = ModeLocal
-	}
 	if c.Compression.Level == "" {
 		c.Compression.Level = "balanced"
 	}
@@ -173,15 +122,6 @@ func (c *Config) Normalize(defaultBackupDir string) {
 	}
 	if c.Retention.Local == 0 {
 		c.Retention.Local = 7
-	}
-	if c.Retention.Cloud == 0 {
-		c.Retention.Cloud = 7
-	}
-	if c.Proxy.Mode == "" {
-		c.Proxy.Mode = "system"
-	}
-	if c.Proxy.URL == "" {
-		c.Proxy.URL = "http://127.0.0.1:7897"
 	}
 }
 
@@ -215,11 +155,6 @@ func Save(path string, cfg Config) error {
 }
 
 func Validate(cfg Config) error {
-	switch cfg.Mode {
-	case ModeLocal, ModeHybrid, ModeCloud:
-	default:
-		return fmt.Errorf("未知备份方式：%s", cfg.Mode)
-	}
 	if cfg.BackupDir == "" {
 		return errors.New("本地备份目录不能为空")
 	}
@@ -243,9 +178,6 @@ func Validate(cfg Config) error {
 	if cfg.Retention.Local < 1 || cfg.Retention.Local > 99 {
 		return errors.New("本地保留份数必须在 1 到 99 之间")
 	}
-	if cfg.Retention.Cloud < 1 || cfg.Retention.Cloud > 99 {
-		return errors.New("云端保留份数必须在 1 到 99 之间")
-	}
 	switch cfg.Schedule.Kind {
 	case ScheduleManual, ScheduleDaily, ScheduleWeekly:
 	default:
@@ -256,25 +188,6 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Schedule.Weekday < 0 || cfg.Schedule.Weekday > 6 {
 		return errors.New("计划星期必须在 0 到 6 之间")
-	}
-	switch cfg.Proxy.Mode {
-	case "system", "manual", "off":
-	default:
-		return fmt.Errorf("未知代理模式：%s", cfg.Proxy.Mode)
-	}
-	if cfg.Proxy.Mode == "manual" {
-		if cfg.Proxy.URL == "" {
-			return errors.New("手动代理地址不能为空")
-		}
-		parsed, err := url.Parse(cfg.Proxy.URL)
-		if err != nil || parsed.Host == "" {
-			return errors.New("手动代理地址无效")
-		}
-		switch strings.ToLower(parsed.Scheme) {
-		case "http", "https", "socks5", "socks5h":
-		default:
-			return errors.New("代理协议只支持 http、https 或 socks5")
-		}
 	}
 	return nil
 }

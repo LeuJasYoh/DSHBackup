@@ -1,36 +1,33 @@
 package config
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
 
 func TestValidateDefaults(t *testing.T) {
-	cfg := Default("D:\\Backups")
+	cfg := Default(t.TempDir())
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("default config should be valid: %v", err)
-	}
-	cfg.Mode = "cloud"
-	cfg.GitHub.Owner = "o"
-	cfg.GitHub.Repo = "r"
-	if err := Validate(cfg); err != nil {
-		t.Fatalf("cloud config should be valid: %v", err)
 	}
 }
 
 func TestValidateRejectsUnsafe(t *testing.T) {
-	cfg := Default("D:\\Backups")
+	cfg := Default(t.TempDir())
 	cfg.BackupDir = "relative"
 	if err := Validate(cfg); err == nil {
 		t.Fatal("relative backup dir should be rejected")
 	}
-	cfg = Default("D:\\Backups")
+	cfg = Default(t.TempDir())
 	cfg.Compression.ExtraArgs = []string{"-psecret"}
 	if err := Validate(cfg); err == nil {
 		t.Fatal("dangerous 7z arg should be rejected")
 	}
-	cfg = Default("D:\\Backups")
+	cfg = Default(t.TempDir())
 	cfg.Schedule.Time = "25:00"
 	if err := Validate(cfg); err == nil {
 		t.Fatal("invalid schedule time should be rejected")
@@ -38,7 +35,7 @@ func TestValidateRejectsUnsafe(t *testing.T) {
 }
 
 func TestNextRun(t *testing.T) {
-	cfg := Default("D:\\Backups")
+	cfg := Default(t.TempDir())
 	cfg.Schedule = Schedule{Kind: ScheduleDaily, Time: "03:00", Weekday: 1}
 	loc := time.FixedZone("CST", 8*3600)
 	now := time.Date(2026, 10, 26, 2, 0, 0, 0, loc)
@@ -74,5 +71,79 @@ func TestSaveLoad(t *testing.T) {
 	}
 	if !loaded.OnboardingComplete || loaded.Retention.Local != 9 {
 		t.Fatalf("unexpected loaded config: %+v", loaded)
+	}
+}
+
+func TestLegacyConfigLoadsAndSavesLocalFields(t *testing.T) {
+	for _, mode := range []string{"local", "cloud", "hybrid"} {
+		for _, encrypted := range []bool{false, true} {
+			t.Run(mode+map[bool]string{false: "/plain", true: "/encrypted"}[encrypted], func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "config.json")
+				want := Default(filepath.Join(dir, "old-backups"))
+				want.OnboardingComplete = true
+				want.IncludeDesktop = false
+				want.EncryptionLocal = encrypted
+				want.Compression = Compression{Level: "max", DictionaryMB: 64, Threads: 2, ExtraArgs: []string{"-mqs=on"}}
+				want.Schedule = Schedule{Kind: ScheduleWeekly, Time: "21:35", Weekday: 4}
+				want.Retention.Local = 12
+				want.PreRestoreSnapshot = false
+				want.VerifyAfterBackup = false
+				want.LastScheduledAt = "2026-10-22T21:35:00+08:00"
+				raw, err := json.Marshal(want)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var legacy map[string]any
+				if err := json.Unmarshal(raw, &legacy); err != nil {
+					t.Fatal(err)
+				}
+				legacy["mode"] = mode
+				legacy["github"] = map[string]any{"clientId": "old-id", "owner": "old-owner", "repo": "old-repo", "autoUpload": true}
+				legacy["proxy"] = map[string]any{"mode": "manual", "url": "invalid-old-address", "passwordSet": true}
+				legacy["retention"].(map[string]any)["cloud"] = -1
+				raw, err = json.Marshal(legacy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, raw, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				got, err := Load(path, filepath.Join(dir, "new-default"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("local settings changed during migration: got %+v, want %+v", got, want)
+				}
+				if err := Save(path, got); err != nil {
+					t.Fatal(err)
+				}
+				raw, err = os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var saved map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &saved); err != nil {
+					t.Fatal(err)
+				}
+				for _, field := range []string{"mode", "github", "proxy"} {
+					if _, exists := saved[field]; exists {
+						t.Fatalf("obsolete field %q was saved", field)
+					}
+				}
+				var retention map[string]int
+				if err := json.Unmarshal(saved["retention"], &retention); err != nil {
+					t.Fatal(err)
+				}
+				if len(retention) != 1 || retention["local"] != want.Retention.Local {
+					t.Fatalf("unexpected retention: %v", retention)
+				}
+				reloaded, err := Load(path, "unused")
+				if err != nil || !reflect.DeepEqual(reloaded, want) {
+					t.Fatalf("saved local settings changed: %+v, %v", reloaded, err)
+				}
+			})
+		}
 	}
 }

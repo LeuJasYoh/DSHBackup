@@ -1,6 +1,8 @@
 package manifest
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,13 +32,13 @@ func testManifest() Manifest {
 	}
 }
 
-func TestReleaseBodyRoundTrip(t *testing.T) {
+func TestLocalManifestRoundTrip(t *testing.T) {
 	value := testManifest()
-	body, err := EncodeReleaseBody(value)
-	if err != nil {
+	path := filepath.Join(t.TempDir(), "backup.manifest.json")
+	if err := Write(path, value); err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := DecodeReleaseBody(body)
+	decoded, err := Read(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,11 +63,22 @@ func TestValidateRejectsUnsafeArchiveName(t *testing.T) {
 	}
 }
 
-func TestMerge(t *testing.T) {
-	local := []Snapshot{{ID: "a", CreatedAt: "2026-10-26T12:00:00+08:00", Location: "local", LocalPath: "x"}}
-	cloud := []Snapshot{{ID: "a", CreatedAt: "2026-10-26T12:00:00+08:00", Location: "cloud", CloudReleaseID: 5}}
-	merged := MergeLocalAndCloud(local, cloud)
-	if len(merged) != 1 || merged[0].Location != "both" || merged[0].CloudReleaseID != 5 || merged[0].LocalPath != "x" {
-		t.Fatalf("unexpected merge: %+v", merged)
+func TestScanRetainsMissingAndMismatchedArchives(t *testing.T) {
+	dir := t.TempDir()
+	value := testManifest()
+	archive := filepath.Join(dir, value.Archive.Name)
+	if err := Write(ManifestPath(archive), value); err != nil {
+		t.Fatal(err)
+	}
+	list, _, err := Scan(dir)
+	if err != nil || len(list) != 1 || list[0].Status != "missing" {
+		t.Fatalf("missing archive: %+v %v", list, err)
+	}
+	if err := os.WriteFile(archive, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, _, err = Scan(dir)
+	if err != nil || len(list) != 1 || list[0].Status != "size-mismatch" {
+		t.Fatalf("mismatched archive: %+v %v", list, err)
 	}
 }

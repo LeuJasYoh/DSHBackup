@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { go, store } from "../store";
-import { modeLabel } from "../lib/format";
 
-const mode = computed(() => store.boot?.config.mode ?? "local");
 const sevenZip = computed(() => {
   const version = store.boot?.app.sevenZip.version ?? "";
   const match = version.match(/(\d+\.\d+)/);
   return match ? `7z ${match[1]}` : "7z";
 });
-const version = computed(() => store.boot?.app.version ?? "1.0.0");
+const version = computed(() => store.boot?.app.version ?? "1.1.0");
 </script>
 
 <template>
@@ -26,6 +24,7 @@ const version = computed(() => store.boot?.app.version ?? "1.0.0");
       <button
         class="nav-item"
         :class="{ active: store.page === 'dashboard' }"
+        :aria-current="store.page === 'dashboard' ? 'page' : undefined"
         aria-label="概览"
         @click="go('dashboard')"
       >
@@ -35,6 +34,7 @@ const version = computed(() => store.boot?.app.version ?? "1.0.0");
       <button
         class="nav-item"
         :class="{ active: store.page === 'history' }"
+        :aria-current="store.page === 'history' ? 'page' : undefined"
         aria-label="备份历史"
         @click="go('history')"
       >
@@ -44,6 +44,7 @@ const version = computed(() => store.boot?.app.version ?? "1.0.0");
       <button
         class="nav-item"
         :class="{ active: store.page === 'settings' }"
+        :aria-current="store.page === 'settings' ? 'page' : undefined"
         aria-label="设置"
         @click="go('settings')"
       >
@@ -62,9 +63,9 @@ const version = computed(() => store.boot?.app.version ?? "1.0.0");
     <div class="sidebar-note">
       <div class="sidebar-mode">
         <span class="dot"></span>
-        <span>{{ modeLabel(mode) }}</span>
+        <span>本地备份</span>
       </div>
-      <p>{{ mode === "local" ? "本地优先 · 云端可选" : "云端归档 · 始终加密" }}</p>
+      <p>本地归档 · 自主管理</p>
     </div>
 
     <div class="sidebar-footer">

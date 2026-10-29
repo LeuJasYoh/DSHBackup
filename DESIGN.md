@@ -1,8 +1,8 @@
 # DSH 核心数据备份工具设计文档
 
-- 版本：v1.0（已实现）
-- 日期：2026-10-26
-- 状态：v1.0 已实现并完成便携版构建；真实环境已通过备份、校验、恢复和加密恢复验收
+- 版本：v1.1.0（纯本地）
+- 日期：2026-10-29
+- 状态：v1.1.0 已移除 GitHub 云端与全部网络功能，仅保留本地备份；详见第 22 章。第 10 章与 20、21 章记录的云端设计已废弃，仅作历史决策参考
 - 目标平台：Windows 10/11（首版）；Linux 暂不实现，预留接口
 
 ---
@@ -844,7 +844,7 @@ app\DSHBackup\
 ```
 
 - 构建命令：`powershell -ExecutionPolicy Bypass -File build.ps1`
-- 构建产物：`dist\DSHBackup\` 和 `dist\DSHBackup-1.0.0-win64.zip`
+- 构建产物：`dist\DSHBackup\` 和 `dist\DSHBackup-<version>-win64.zip`
 - Rust sidecar 使用 MSVC stable、release、静态 CRT；7za.exe 固定 26.05 x64 并校验 SHA-256
 
 ### 19.2 已完成的验收
@@ -866,3 +866,118 @@ app\DSHBackup\
 - 恢复桌面登录态仍受 Windows 用户加密限制；同机同用户成功率最高
 - 7z 密码会出现在本机命令行；已在威胁模型中接受，且应用不记录密码到日志
 - 计划任务只在应用运行时触发，不注册 Windows 计划任务
+
+## 20. v1.0.1：前端审查与 GitHub 连接改造
+
+### 20.1 GitHub 授权为什么"不好用"
+
+- 失败只进一条 6 秒 toast：`StartGitHubDeviceFlow` 返回的错误在前端只被 `showToast` 消费，弹窗内没有任何痕迹，用户不知道是 Client ID 错、没开 Device Flow、还是网络不通
+- Client ID 只在授权成功后才写配置：一旦失败，下次打开弹窗要重新粘贴 40 位字符串
+- 缺少 OAuth App 建立步骤的具体说明，"Enable Device Flow" 这个必填开关没有被点名
+- 连不上 GitHub 时轮询会静默重试到 15 分钟过期，界面一直显示"等待你在浏览器中完成授权"
+- "打开浏览器"用的是不带代码的 `verification_uri`，用户还要手输 8 位代码
+- 连接成功后还要去"设置 → 云端"另行选择仓库并切换备份方式，至少多三步
+
+### 20.2 现在的做法
+
+- `github.AuthError{Code,Message,Hint}`：OAuth 错误码、HTTP 状态、非 JSON 响应、传输错误分别映射成中文结论 + 下一步动作；`github:auth` 事件带 `code`/`hint`
+- 弹窗内联持久显示错误（`role="alert"`），并按 code 给出上下文按钮：打开 OAuth App 页面 / 改用 PAT / 检查网络设置
+- Client ID 在发起授权前就落盘，新增 `SetGitHubClientID`（校验长度与空白字符），设置"云端"标签也可直接编辑保存；弹窗标签显示"已保存/未保存"
+- 轮询连续失败 8 次后停止并报"无法连接 GitHub"，中途在等待条里显示第几次重试；代理/门户劫持导致的非 JSON 响应单独提示检查网络
+- 弹窗改成两步：授权 → 选择/新建私有仓库 → 完成后按勾选直接把 `mode` 切成 hybrid（走 `SaveConfig`，因此仍会确保加密密钥就绪）
+- 使用 `verification_uri_complete` 打开浏览器；提供"重新打开浏览器""取消授权""重新获取授权码"和倒计时（最后 60 秒变红）
+- fine-grained PAT 兼容：`permissions.push` 缺失时不再判定为只读（改用 `canPushKnown`），建仓失败提示改为到网页手动建仓后手填 owner/repo
+
+### 20.3 前端审查修掉的其它问题
+
+- 进度步骤：`taskSteps` 与 Go 实际阶段对齐（恢复补 `verify`），未知阶段只前进不后退，不再从 96% 跳回第一步
+- 恢复弹窗：改为按快照 id 监听，后台刷新不再吞掉用户勾选；`includeDesktop` 默认值取自快照是否真的含桌面态，提交时再与可用性求与
+- 确认弹窗：失败时保持打开并内联显示原因 + "重试"，不再 toast 后自动关闭
+- 通知：`app:notice` 的 warning/error 会常驻概览页提示条（计划备份被跳过这类事件不再只有 5 秒可见）
+- 首启向导：手填但没点"使用"的仓库在下一步时自动确认，去掉凭猜测覆盖输入的 watcher
+- 可访问性：所有浮层加 `role="dialog"`/`aria-modal`，新增 `useModalFocus` 做焦点圈闭与关闭后归还；导航 `aria-current`、设置标签 `aria-selected`/`tabpanel`、表格 `scope="col"`、分段按钮 `aria-pressed`、进度条 `role="progressbar"`；信息角标改为可见文案或 `aria-hidden`
+- 视觉：`--muted` 由 #98a2b3 提到 #667085，侧栏次要文字提亮，9px 及以下正文提到 10–11px；toast 恢复可点击关闭并上移，不再压住弹窗底部按钮
+- 文案与实现一致：桌面登录态备份新增排除 `Crashpad`，"不备份崩溃缓存"从此成立
+
+### 20.4 验证
+
+- `go test ./...`：新增 Device Flow 错误映射（未开 Device Flow / Client ID 错 / 404 / HTML 响应）、`permissions` 缺失可用、`SetGitHubClientID` 持久化与拒绝、无 Client ID 时不联网即给出可执行错误
+- 真实后端联调（`wails dev -browser`）：从"设置 → 云端"打开弹窗 → 空 Client ID 内联报错；把代理指向不存在的端口后发起授权，弹窗内显示"连不上 GitHub：代理端口没有程序在监听"并出现"检查网络设置"，点击后关闭弹窗并跳到网络标签
+- 便携版 `build.ps1` 全量构建通过；静态预览覆盖授权步骤一、错误态与选择仓库步骤二
+- 未覆盖：真实 GitHub 账号的完整 Device Flow 授权与上传（需要用户本人的 OAuth App 与浏览器确认）
+
+## 21. v1.0.1：浏览器回跳登录（授权码 + PKCE + 本机回调）
+
+用户希望"点一下→跳到 GitHub 授权页→授权后回到应用"。查证结论决定了实现方式：
+
+- GitHub 文档写明 web 授权流程换取 token 时 `client_secret` 是 "Required unless the token was generated using the device flow"，而 2025-07 的 PKCE 支持也只是把跳转和兑换绑定，"GitHub does not distinguish between public and confidential clients"。所以浏览器回跳必须让用户提供 Client Secret，PKCE 省不掉它
+- 但 loopback 回调是可用的，且文档明确 `redirect_uri` 的端口不必与 OAuth App 中登记的回调一致，因此应用可以每次随机占用一个 127.0.0.1 端口，用户只需登记一次 `http://127.0.0.1/callback`
+
+### 21.1 流程
+
+1. `localauth.Start(state)` 在 `127.0.0.1:0` 起一次性监听，拿到随机端口
+2. `github.NewPKCE()` 生成 verifier/S256 challenge，`BuildAuthorizeURL` 拼出带 `state`、`code_challenge` 的授权地址并打开系统浏览器
+3. 用户在 GitHub 授权页点 Authorize，GitHub 重定向回本机 `/callback`
+4. 监听校验 `state`（常量时间比较），不匹配就只回一个提示页、继续等待；匹配则渲染中文完成页并把 code 交给业务层，随后自行关闭端口
+5. `ExchangeCode` 用 code + verifier + Client Secret 换 token，再读账号、写凭据管理器、发 `github:auth` success，弹窗自动进入"选择私有仓库"
+
+### 21.2 凭据存放
+
+- Client ID：本机配置文件（不是密钥）
+- Client Secret、token、代理密码：Windows 凭据管理器；设置"云端"标签可单独保存或清除 Client Secret
+- 断开连接只删 token，保留 Client Secret（属于用户自己的 OAuth App，重装后可继续用）
+- 回调端口、code、token 一律不写日志
+
+### 21.3 三种方式并存
+
+浏览器登录为默认标签；设备码（只需 Client ID）和 fine-grained PAT 作为兜底保留，错误提示里会直接给出"改用设备码"的按钮。
+
+### 21.4 验证
+
+- `internal/localauth` 测试：未知路径 404、state 不匹配不得取码、匹配时取码并返回完成页、`error=access_denied` 透传、`Wait` 响应上下文取消
+- `internal/github` 测试：PKCE challenge 命中 RFC 7636 附录 B 已知答案、授权 URL 参数完整、`ExchangeCode` 成功与三类错误映射（回调不匹配 / 密钥不对 / code 已用过）
+- 真实后端实跑：监听端口按预期开启；伪造 `state` 的回调被忽略且界面保持等待；点"取消"后端口立即释放（再次请求连接被拒）；带正确 `state` 的回调被接受并进入换 token 阶段（把代理指向死端口，因此全程没有访问 github.com，错误信息如实显示在本机监听失败处）
+- 全程未向 GitHub 发起任何带伪造凭据的请求；真实账号端到端仍待用户验收
+
+## 22. v1.1.0：移除云端，收敛为纯本地工具
+
+### 22.1 决策
+
+用户在 2026-10-29 实际使用后判断 GitHub 上传过慢、严重影响体验，决定**彻底删除云端功能及所有网络相关功能**，而不是优化或保留为可选项。因此：
+
+- 删除 GitHub 登录（浏览器回跳 / 设备码 / PAT）、私有仓库 Releases 上传下载、云端保留策略、代理设置和 Windows 凭据管理器读写
+- 删除 `internal/github`、`internal/localauth`、`internal/creds` 及其测试，`wincred` 依赖移除
+- 配置去掉 `mode` / `github` / `proxy`，`retention` 只保留 `local`；旧配置加载时忽略这些字段，备份目录、桌面登录态选项、加密开关、压缩与计划设置原样保留，重新保存后旧字段被清除
+- 快照模型去掉 `location` / `source` 和全部 `cloud*` 字段；备份清单格式不变，旧本地归档和 `data\keys` 继续可用
+- 本程序不再读取以前写入凭据管理器的令牌，也不会主动删除；随包 README 告知用户可手动清理
+
+### 22.2 同时落实的审查结论
+
+- **恢复前快照保护实际目标**：预备份按本次恢复真正要写入的目录（默认 `.dsh` 与勾选时的桌面登录态；或自定义目录）暂存，不再沿用日常备份范围。暂存出现跳过或警告即中止恢复，避免"有预备份但保护不到位"
+- **恢复到其他目录只写 DSH 核心数据**：请求同时指定自定义目录和桌面登录态会被拒绝，不再把桌面态悄悄写回系统位置
+- **恢复目标边界**：目标不能是应用目录、备份目录或它们的上级目录
+- **设置保存互斥**：任务进行中拒绝修改备份设置；`onboardingComplete` / `lastScheduledAt` 由服务端保护
+- **一套设置草稿与基线**：高级参数原始输入计入未保存判断，后台刷新不再吞掉编辑；单一「保存设置」入口
+- 首次设置简化为「备份目录与范围 → 确认」两步，加密唯一开关仍只在「设置 → 安全」
+- 失败信息内联常驻，不只依赖会消失的 toast；模态框焦点圈闭与归还
+
+### 22.3 验证
+
+- `go test ./...`：配置迁移（旧 `mode=hybrid`、`github`、`proxy` 字段）、设置互斥、manifest 缺失/大小不符状态、以及集成测试「加密备份 → 校验 → 恢复到其他目录（断言预快照只含 `dsh`、系统桌面态未被触碰、目标目录无关文件保留）→ 覆盖恢复（断言预快照含桌面态）」
+- `cargo test --release`：路径安全、7z 白名单与进度解析、age 密码封装全部通过
+- `npm run build`：`vue-tsc` 严格检查 + 生产构建通过；mock 只在开发模式按需加载，生产包不再包含预览数据
+- 真实后端联调（`wails dev -browser`，使用临时应用目录）：
+  - 概览读取真实 DSH 数据（约 108 MB / 521 个文件），Bootstrap 中已无云端/账号字段
+  - 真实备份成功（DSH 桌面端占用 Cookies 时如实列为警告），归档大小与清单一致
+  - 校验通过：「归档完整且可解密」
+  - 恢复到临时目录（桌面态关闭）：文件写入正确、目标目录原有无关文件保留、系统桌面登录态未被改动；恢复前快照的 `scope` 仅含 `dsh`、`desktopIncluded=false`
+  - 人为让归档缺失后刷新：该行显示「归档缺失」，恢复/校验按钮禁用并给出原因，条目仍保留
+  - 设置页：高级参数计入未保存判断、跨页面保留草稿并提示、非法参数内联报错且禁止保存、保存后归一化
+- 便携版 `build.ps1` 全量构建通过；组装步骤保留 `dist\DSHBackup` 下已有的 `data` 和 `backups`（已用占位文件验证）。1.1.0 包在 WebView2 中启动正常，首启为两步本地设置
+- 未做：真实覆盖 `%USERPROFILE%\.dsh` 的恢复（避免破坏现有环境，覆盖路径由集成测试在临时目录验证）
+
+### 22.4 交付物（1.1.0）
+
+- `dist\DSHBackup-1.1.0-win64.zip`（6,100,812 字节）
+- SHA-256 见 `dist\SHA256SUMS.txt`；主程序、sidecar、7za 的哈希一并列出
+- 未提交、未推送、未发布；旧 1.0.0 / 1.0.1 的本地 zip 原样保留

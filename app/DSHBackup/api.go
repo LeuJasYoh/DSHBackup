@@ -2,7 +2,6 @@ package main
 
 import (
 	"DSHBackup/internal/config"
-	"DSHBackup/internal/github"
 	"DSHBackup/internal/manifest"
 	"DSHBackup/internal/sidecar"
 )
@@ -53,19 +52,6 @@ type DSHStatus struct {
 	CheckedAt string       `json:"checkedAt"`
 }
 
-type GitHubStatus struct {
-	Connected          bool   `json:"connected"`
-	Login              string `json:"login"`
-	Name               string `json:"name"`
-	AvatarURL          string `json:"avatarUrl"`
-	Repo               string `json:"repo"`
-	ClientID           string `json:"clientId"`
-	ClientIDConfigured bool   `json:"clientIdConfigured"`
-	TokenPresent       bool   `json:"tokenPresent"`
-	AutoUpload         bool   `json:"autoUpload"`
-	ConnectedAt        string `json:"connectedAt"`
-}
-
 type DiskInfo struct {
 	Path  string `json:"path"`
 	Free  uint64 `json:"free"`
@@ -86,21 +72,16 @@ type Bootstrap struct {
 	Paths          PathsInfo           `json:"paths"`
 	DSH            DSHStatus           `json:"dsh"`
 	LocalSnapshots []manifest.Snapshot `json:"localSnapshots"`
-	CloudSnapshots []manifest.Snapshot `json:"cloudSnapshots"`
-	CloudError     string              `json:"cloudError,omitempty"`
 	Latest         *manifest.Snapshot  `json:"latest,omitempty"`
 	Key            sidecar.KeyInfo     `json:"key"`
 	KeyError       string              `json:"keyError,omitempty"`
-	GitHub         GitHubStatus        `json:"github"`
 	Disk           DiskInfo            `json:"disk"`
 	Schedule       ScheduleInfo        `json:"schedule"`
-	ProxyPassword  bool                `json:"proxyPassword"`
 	Warnings       []string            `json:"warnings"`
 	LogsPath       string              `json:"logsPath"`
 }
 
 type OnboardingInput struct {
-	Mode            string `json:"mode"`
 	BackupDir       string `json:"backupDir"`
 	EncryptionLocal bool   `json:"encryptionLocal"`
 	Compression     string `json:"compression"`
@@ -109,7 +90,6 @@ type OnboardingInput struct {
 
 type RestoreRequest struct {
 	SnapshotID         string `json:"snapshotId"`
-	Location           string `json:"location"`
 	IncludeDesktop     bool   `json:"includeDesktop"`
 	PreRestoreSnapshot bool   `json:"preRestoreSnapshot"`
 	CustomTarget       string `json:"customTarget"`
@@ -118,7 +98,6 @@ type RestoreRequest struct {
 
 type VerifyRequest struct {
 	SnapshotID string `json:"snapshotId"`
-	Location   string `json:"location"`
 }
 
 type TaskProgress struct {
@@ -147,40 +126,7 @@ type TaskResult struct {
 	Warnings           []string           `json:"warnings,omitempty"`
 	Snapshot           *manifest.Snapshot `json:"snapshot,omitempty"`
 	PreRestoreSnapshot *manifest.Snapshot `json:"preRestoreSnapshot,omitempty"`
-	CloudError         string             `json:"cloudError,omitempty"`
 	Restore            *RestoreOutcome    `json:"restore,omitempty"`
-}
-
-type GitHubAuthEvent struct {
-	Status          string          `json:"status"`
-	UserCode        string          `json:"userCode,omitempty"`
-	VerificationURI string          `json:"verificationUri,omitempty"`
-	ExpiresAt       string          `json:"expiresAt,omitempty"`
-	Message         string          `json:"message,omitempty"`
-	Account         *github.Account `json:"account,omitempty"`
-}
-
-type DeviceFlowView struct {
-	UserCode                string `json:"userCode"`
-	VerificationURI         string `json:"verificationUri"`
-	VerificationURIComplete string `json:"verificationUriComplete,omitempty"`
-	ExpiresIn               int    `json:"expiresIn"`
-	Interval                int    `json:"interval"`
-	ExpiresAt               string `json:"expiresAt"`
-}
-
-type ProxyTestRequest struct {
-	Mode     string `json:"mode"`
-	URL      string `json:"url"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-type ProxyTestResult struct {
-	Reachable bool   `json:"reachable"`
-	Status    int    `json:"status"`
-	LatencyMS int64  `json:"latencyMs"`
-	Message   string `json:"message"`
 }
 
 type Notice struct {
