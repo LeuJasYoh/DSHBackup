@@ -8,8 +8,8 @@ Windows 便携版 DSH 核心数据备份工具。备份数据只保存在本机�
 
 ## 功能
 
-- 备份 `.dsh` 核心数据：凭据、会话、附件、插件、用量等
-- 可选备份 `%APPDATA%\@deepseek-ai\dsh-desktop` 桌面登录态
+- 备份整个 `.dsh` 目录：凭据 `.credentials.yaml`、用量 `.dshw-usage.json`、登录态与配置 `profiles`/`sessions`/`storages`、附件 `attachments`/`media`、角色与语音 `whale-*` 等；只排除 `logs`、`cache`、`electron-user-data`
+- 可选备份 `%APPDATA%\@deepseek-ai\dsh-desktop` 桌面登录态；不读取项目代码与工作区
 - 不要求任何账号，备份数据不上传；可在设置中关闭启动时的 GitHub 发行版检查
 - 侧栏 GitHub 入口与可选的新版本提示；不会自动下载或安装更新
 - 7-Zip 26.05 x64，压缩档位与高级参数白名单
@@ -18,6 +18,9 @@ Windows 便携版 DSH 核心数据备份工具。备份数据只保存在本机�
 - 恢复前自动备份即将被覆盖的目录；「恢复到其他目录」只写入 DSH 核心数据，不触碰系统桌面登录态
 - 路径穿越与重解析点校验
 - 计划备份（每天/每周，应用运行时生效）
+- 界面跟随系统亮/暗，也可在设置里固定；暗色为中性纸墨底纱层，不抬亮度
+- 设置页是一整篇可滚动文档，左侧一条目录导轨标出当前小节；删除归档后 6 秒内可在底部撤销，不弹确认框
+- 备份过程逐步列出并显示每步耗时，长路径鼠标移上去可复制
 - Wails 2.15 + WebView2 + Vue3/TypeScript，便携版免安装
 
 ## 技术栈
@@ -56,12 +59,19 @@ dist\DSHBackup\
   DSHBackup.exe
   dsh-backup-core.exe
   tools\7za.exe
+  tools\License.txt
+  icon.ico
   README.txt
   THIRD_PARTY_NOTICES.txt
+  7-Zip-SOURCE.txt
+  BUILD.txt
 dist\DSHBackup-<version>-win64.zip
 ```
 
-构建脚本会校验 7za SHA-256、构建静态 CRT Rust sidecar、运行 Wails 构建并组装便携目录；组装时保留 `dist\DSHBackup` 下已有的 `data` 和 `backups`。
+构建脚本会校验 7za SHA-256、构建静态 CRT Rust sidecar、运行 Wails 构建并组装便携目录。
+组装时会**先删掉输出目录里残留的 `data` 和 `backups`**（自 1.2.0 起），所以发布包只含上面 9 个运行文件，
+不会把上一台机器的配置、密钥或归档打进 zip；解压后首次运行因此是干净的两步引导。
+升级已有安装时，请替换程序与 `tools`，保留自己的 `data` 和 `backups`。
 
 ## 测试
 
@@ -74,12 +84,14 @@ go test ./...
 cd app\DSHBackup\sidecar
 cargo test
 
-# 前端
+# 前端（先 vue-tsc 类型检查，再 Vite 构建）
 cd app\DSHBackup\frontend
 npm run build
 ```
 
 Go 集成测试会在临时目录里跑完整的「加密备份 → 校验 → 恢复到其他目录 → 覆盖恢复」流程，并断言恢复前快照只保护实际被覆盖的目录。
+前端还有只在浏览器里生效的开发态 mock（`frontend/src/lib/mock.ts`，生产构建时由 Vite 整块消除），详见
+[app/DSHBackup/README.md](app/DSHBackup/README.md)。
 
 ## 安全边界
 

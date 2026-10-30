@@ -1,6 +1,7 @@
 # DSH Backup
 
-Windows 便携版 DSH 核心数据备份工具。只备份 DSH 的凭据、会话、附件、插件和用量，以及可选的桌面登录态；不读取项目代码。
+Windows 便携版 DSH 核心数据备份工具。备份整个 `.dsh` 目录（凭据、用量、登录态与配置、会话、附件、角色与语音），
+只排除 `logs`、`cache`、`electron-user-data`；外加可选的桌面登录态，不读取项目代码。
 
 - 设计文档：`../../DESIGN.md`
 - 便携版产物：`../../dist/DSHBackup/`
@@ -61,15 +62,13 @@ npm run dev
 # 打开 Vite 地址；无 Wails runtime 时自动使用 mock
 ```
 
-可用预览路由：
+可用的 mock 查询参数（只有这两个，其余参数不生效）：
 
-- `?onboarding=1`：首启
-- `?preview=settings&tab=security`
-- `?preview=history`
-- `?preview=restore`
-- `?preview=progress`
+- `?onboarding=1`：清空归档列表并回到首启两步引导
+- `?update=1`：让只读更新检查返回一个「有新版」的结果，用来验侧栏徽标和顶部提示
 
-这些路由只在浏览器 mock 模式下生效。
+界面本身没有 URL 路由，总览 / 归档历史 / 设置靠侧栏切换；设置页是一整篇文档加左侧目录导轨，
+跳转用点击目录项，不用查询参数。这些 mock 只在浏览器 dev 模式下生效，生产构建会被整块消除。
 
 ## 测试
 
