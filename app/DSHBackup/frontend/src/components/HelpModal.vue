@@ -48,6 +48,14 @@ function jump(id: string) {
 function onScroll() {
   const container = doc.value;
   if (!container) return;
+  // The last section can never scroll up to the threshold line, so a pure
+  // "top has passed" rule leaves the final rail items unreachable. At the
+  // bottom, the last section wins.
+  const scrollable = container.scrollHeight > container.clientHeight + 8;
+  if (scrollable && container.scrollTop + container.clientHeight >= container.scrollHeight - 8) {
+    active.value = sections[sections.length - 1].id;
+    return;
+  }
   const top = container.getBoundingClientRect().top;
   let current = sections[0].id;
   for (const section of sections) {
@@ -73,10 +81,6 @@ onUnmounted(() => doc.value?.removeEventListener("scroll", onScroll));
       </div>
       <div class="modal-body help-body">
         <nav class="help-rail" aria-label="使用说明目录">
-          <div class="rail-title">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M21 5H3M15 12H3M17 19H3"/></svg>
-            <span>目录</span>
-          </div>
           <div class="rail-list">
             <svg class="rail-tree rail-tree-base" :style="{ height: `${railRows}px` }" :viewBox="`0 0 25 ${railRows}`" aria-hidden="true"><path :d="railPath" /></svg>
             <svg class="rail-tree rail-tree-mark" :style="markStyle" :viewBox="`0 0 25 ${railRows}`" aria-hidden="true"><path :d="railPath" /></svg>
