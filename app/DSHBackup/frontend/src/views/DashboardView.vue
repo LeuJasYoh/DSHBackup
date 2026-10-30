@@ -6,7 +6,7 @@ import ProgressCard from "../components/ProgressCard.vue";
 import SnapshotTable from "../components/SnapshotTable.vue";
 import {
   checkDSH, dismissNotice, dismissTaskResult, go, isBusy, latestSnapshot, localUsage,
-  openLocalSnapshot, openRestore, openSettingsTab, snapshots,
+  openLocalSnapshot, openRestore, openSettings, snapshots,
   startVerify, store,
 } from "../store";
 import { formatBytes, formatRelative, restoreBlockReason, scheduleLabel, statusLabel } from "../lib/format";
@@ -79,7 +79,7 @@ const weekly = computed(() => {
       </template>
       <template v-else>
         <p class="result-detail">{{ resultNextStep }}</p>
-        <div class="tool-grid"><button class="btn btn-secondary btn-small" @click="openSettingsTab('security')">查看本地日志</button><button v-if="result.kind !== 'backup'" class="btn btn-secondary btn-small" @click="go('history')">返回归档历史</button></div>
+        <div class="tool-grid"><button class="btn btn-secondary btn-small" @click="openSettings('diagnostics')">查看本地日志</button><button v-if="result.kind !== 'backup'" class="btn btn-secondary btn-small" @click="go('history')">返回归档历史</button></div>
       </template>
       <ul v-if="result.warnings?.length" class="warning-list"><li v-for="warning in result.warnings" :key="warning">{{ warning }}</li></ul>
     </div>
@@ -144,7 +144,7 @@ const weekly = computed(() => {
       <section class="card scope-card">
         <div class="card-head">
           <div class="card-title">保护范围</div>
-          <button class="text-button" style="margin-left:auto" @click="openSettingsTab('backup')">编辑<svg class="icon" style="width:12px;height:12px"><use href="#i-chevron-right"></use></svg></button>
+          <button class="text-button" style="margin-left:auto" @click="openSettings('backup-dir')">编辑<svg class="icon" style="width:12px;height:12px"><use href="#i-chevron-right"></use></svg></button>
         </div>
         <div class="rows">
           <div class="rowline">
@@ -196,7 +196,7 @@ const weekly = computed(() => {
 
     <div class="page-foot">
       <span class="copy-host"><svg class="icon"><use href="#i-folder"></use></svg><span class="path-wrap" :title="config.backupDir">备份目录 {{ config.backupDir }} · 可用 {{ formatBytes(boot.disk.free) }}</span><CopyButton :value="config.backupDir" /></span>
-      <span><svg class="icon"><use href="#i-lock"></use></svg>{{ config.encryptionLocal ? "本地加密已开启" : "本地加密未开启" }}<button class="text-button" @click="openSettingsTab('security')">前往设置<svg class="icon" style="width:12px;height:12px"><use href="#i-chevron-right"></use></svg></button></span>
+      <span><svg class="icon"><use href="#i-lock"></use></svg>{{ config.encryptionLocal ? "本地加密已开启" : "本地加密未开启" }}<button class="text-button" @click="openSettings('encryption')">前往设置<svg class="icon" style="width:12px;height:12px"><use href="#i-chevron-right"></use></svg></button></span>
     </div>
   </section>
 </template>

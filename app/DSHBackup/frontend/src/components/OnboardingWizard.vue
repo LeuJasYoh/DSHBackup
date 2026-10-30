@@ -88,7 +88,7 @@ async function finish() {
             </div>
           </template>
         </fieldset>
-        <p class="summary-note">首次设置默认不加密。备份可能包含敏感数据，可稍后在「设置 → 安全」开启本地加密并妥善保管私钥。</p>
+        <p class="summary-note">首次设置默认不加密。备份可能包含敏感数据，可稍后在「设置 → 本地加密」开启本地加密并妥善保管私钥。</p>
       </div>
       <div class="wizard-bottom">
         <p v-if="failure" class="inline-error" role="alert">{{ failure }}</p>

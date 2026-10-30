@@ -2,7 +2,12 @@ export type CompressionLevel = "fast" | "balanced" | "max";
 export type ScheduleKind = "manual" | "daily" | "weekly";
 export type Theme = "system" | "light" | "dark";
 export type Page = "dashboard" | "history" | "settings";
-export type SettingsTab = "backup" | "security" | "about";
+export type SettingsSection =
+  | "backup-dir" | "desktop" | "verify" | "prerestore"
+  | "schedule" | "schedule-time" | "schedule-keep"
+  | "compress" | "compress-advanced"
+  | "encryption" | "keys" | "diagnostics"
+  | "theme" | "update" | "runtime";
 export type TaskKind = "backup" | "restore" | "verify";
 
 export interface CompressionConfig {

@@ -2,7 +2,7 @@ import { computed, reactive } from "vue";
 import { api, copyToClipboard, isPreviewMode } from "./lib/bridge";
 import { errorMessage, restoreBlockReason } from "./lib/format";
 import { applyTheme, normalizeTheme } from "./lib/theme";
-import type { Bootstrap, Config, OnboardingInput, Page, RestoreRequest, SettingsTab, Snapshot, TaskContext, TaskProgress, TaskResult, UpdateInfo } from "./lib/types";
+import type { Bootstrap, Config, OnboardingInput, Page, RestoreRequest, SettingsSection, Snapshot, TaskContext, TaskProgress, TaskResult, UpdateInfo } from "./lib/types";
 
 export interface ConfirmState {
   title: string;
@@ -21,7 +21,7 @@ export const store = reactive({
   boot: null as Bootstrap | null,
   bootError: "",
   page: "dashboard" as Page,
-  settingsTab: "backup" as SettingsTab,
+  settingsSection: "backup-dir" as SettingsSection,
   settingsDirty: false,
   settingsReminder: "",
   task: null as TaskProgress | null,
@@ -143,11 +143,14 @@ export async function init() {
   if (import.meta.env.DEV && store.previewMode) {
     const params = new URLSearchParams(window.location.search);
     const route = params.get("preview");
-    const tabs: SettingsTab[] = ["backup", "security", "about"];
+    const sections: SettingsSection[] = [
+      "backup-dir", "desktop", "verify", "prerestore", "schedule", "schedule-time", "schedule-keep",
+      "compress", "compress-advanced", "encryption", "keys", "diagnostics", "theme", "update", "runtime",
+    ];
     if (route === "history") go("history");
-    else if (route === "settings" || tabs.includes(route as SettingsTab)) {
-      const tab = params.get("tab") ?? route;
-      openSettingsTab(tabs.includes(tab as SettingsTab) ? tab as SettingsTab : "backup");
+    else if (route === "settings" || sections.includes(route as SettingsSection)) {
+      const section = params.get("section") ?? route;
+      openSettings(sections.includes(section as SettingsSection) ? section as SettingsSection : "backup-dir");
     } else if (route === "restore") openRestore();
     else if (route === "help") openHelp();
   }
@@ -168,7 +171,7 @@ export function go(page: Page) {
   store.page = page;
   document.getElementById("content")?.scrollTo({ top: 0 });
 }
-export function openSettingsTab(tab: SettingsTab) { store.settingsTab = tab; go("settings"); }
+export function openSettings(section: SettingsSection) { store.settingsSection = section; go("settings"); }
 export function openHelp() { store.modals.help = true; }
 export function openRestore(id = "") {
   if (isBusy.value) return;
