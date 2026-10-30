@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { openLogsFolder, store } from "../store";
 import { useModalFocus } from "../lib/modalFocus";
 
@@ -20,6 +20,22 @@ const sections = [
   { id: "limits", label: "已知限制" },
   { id: "update", label: "更新" },
 ];
+
+// Same rail geometry as the settings page: 32px rows, a hairline tree at
+// x=8.5, a bracket around the current row and a dot riding its lower edge.
+const ROW = 32;
+const RAIL_X = 8.5;
+const railRows = computed(() => sections.length * ROW);
+const railPath = computed(() => `M ${RAIL_X} 0 L ${RAIL_X} ${railRows.value}`);
+const activeIndex = computed(() => Math.max(0, sections.findIndex((section) => section.id === active.value)));
+const markStyle = computed(() => ({
+  height: `${railRows.value}px`,
+  "--tt": `${activeIndex.value * ROW + 6}px`,
+  "--tb": `${activeIndex.value * ROW + ROW - 6}px`,
+}));
+const dotStyle = computed(() => ({
+  transform: `translate(${RAIL_X - 2}px, ${activeIndex.value * ROW + ROW - 8}px)`,
+}));
 
 function close() { store.modals.help = false; }
 useModalFocus(card, close);
@@ -52,20 +68,29 @@ onUnmounted(() => doc.value?.removeEventListener("scroll", onScroll));
   <div class="overlay modal open" @click.self="close">
     <div ref="card" class="modal-card help-card" role="dialog" aria-modal="true" aria-label="使用说明">
       <div class="modal-head">
-        <div><span class="eyebrow">帮助</span><h2>使用说明</h2></div>
+        <div><h2>使用说明</h2></div>
         <button class="icon-btn modal-close" aria-label="关闭" @click="close">×</button>
       </div>
       <div class="modal-body help-body">
-        <nav class="help-rail" aria-label="帮助目录">
-          <button
-            v-for="section in sections"
-            :key="section.id"
-            type="button"
-            class="help-rail-item"
-            :class="{ active: active === section.id }"
-            :aria-current="active === section.id ? 'true' : undefined"
-            @click="jump(section.id)"
-          >{{ section.label }}</button>
+        <nav class="help-rail" aria-label="使用说明目录">
+          <div class="rail-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M21 5H3M15 12H3M17 19H3"/></svg>
+            <span>目录</span>
+          </div>
+          <div class="rail-list">
+            <svg class="rail-tree rail-tree-base" :style="{ height: `${railRows}px` }" :viewBox="`0 0 25 ${railRows}`" aria-hidden="true"><path :d="railPath" /></svg>
+            <svg class="rail-tree rail-tree-mark" :style="markStyle" :viewBox="`0 0 25 ${railRows}`" aria-hidden="true"><path :d="railPath" /></svg>
+            <i class="rail-dot" :style="dotStyle" aria-hidden="true"></i>
+            <button
+              v-for="section in sections"
+              :key="section.id"
+              type="button"
+              class="rail-item"
+              :data-active="active === section.id"
+              :aria-current="active === section.id ? 'true' : undefined"
+              @click="jump(section.id)"
+            >{{ section.label }}</button>
+          </div>
         </nav>
         <div ref="doc" class="help-doc">
           <section id="help-start">
