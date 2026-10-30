@@ -129,16 +129,16 @@ h1, h2, h3, h4, p { text-wrap: pretty; }
 .content {
   flex: 1; min-height: 0; overflow-y: auto;
   display: flex; flex-direction: column;
-  padding: 0 36px 44px;
+  padding: 0 36px;
   scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
 }
 .content::-webkit-scrollbar, .settings-scroll::-webkit-scrollbar, .modal-body::-webkit-scrollbar, .wizard-body::-webkit-scrollbar { width: 10px; }
 .content::-webkit-scrollbar-thumb, .settings-scroll::-webkit-scrollbar-thumb, .modal-body::-webkit-scrollbar-thumb, .wizard-body::-webkit-scrollbar-thumb {
   border: 3px solid transparent; border-radius: 99px; background: var(--border-strong); background-clip: padding-box;
 }
-.page { display: none; flex: 0 0 auto; width: 100%; max-width: 1080px; margin: 0 auto; }
+.page { display: none; flex: 0 0 auto; width: 100%; max-width: 1080px; margin: 0 auto; padding-bottom: 44px; }
 .page.active { display: block; animation: page-in .4s var(--ease) both; }
-.settings-page { max-width: 960px; }
+.settings-page { max-width: 960px; padding-bottom: 0; }
 @keyframes page-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 
 /* Sidebar — 不铺底色，只有一条发丝线 */

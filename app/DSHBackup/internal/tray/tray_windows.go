@@ -8,6 +8,7 @@ package tray
 import (
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"sync"
 	"syscall"
@@ -39,6 +40,8 @@ var (
 	procCreateIconFromResource = user32.NewProc("CreateIconFromResourceEx")
 	procDestroyIcon            = user32.NewProc("DestroyIcon")
 	procLoadIconW              = user32.NewProc("LoadIconW")
+	procRegisterWindowMessageW = user32.NewProc("RegisterWindowMessageW")
+	procExtractIconExW         = shell32.NewProc("ExtractIconExW")
 	procGetModuleHandleW       = kernel32.NewProc("GetModuleHandleW")
 	procShellNotifyIconW       = shell32.NewProc("Shell_NotifyIconW")
 	wndProcCallback            = syscall.NewCallback(windowProc)
@@ -74,8 +77,6 @@ const (
 
 	idiApplication = 32512
 	lrDefaultColor = 0x0000
-
-	hwndMessage = ^uintptr(0) - 2 // (HWND)-3, the message-only window parent
 
 	cmdShow         = 1
 	cmdBackup       = 2
@@ -138,11 +139,12 @@ type Callbacks struct {
 }
 
 type Tray struct {
-	hwnd      uintptr
-	icon      uintptr
-	menu      uintptr
-	className *uint16
-	callbacks Callbacks
+	hwnd           uintptr
+	icon           uintptr
+	menu           uintptr
+	className      *uint16
+	taskbarCreated uint32
+	callbacks      Callbacks
 
 	mu     sync.Mutex
 	closed bool
@@ -171,12 +173,14 @@ func New(iconData []byte, tipText string, callbacks Callbacks) (*Tray, error) {
 		return nil, fmt.Errorf("注册托盘窗口失败：%v", callErr)
 	}
 	windowTitle, _ := windows.UTF16PtrFromString("DSH Backup")
+	// A hidden top-level window, not HWND_MESSAGE: the shell ignores
+	// message-only windows for both the icon and the callback messages.
 	hwnd, _, callErr := procCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(windowTitle)),
 		0, 0, 0, 0, 0,
-		hwndMessage, 0, instance, 0,
+		0, 0, instance, 0,
 	)
 	if hwnd == 0 {
 		_, _, _ = procUnregisterClassW.Call(uintptr(unsafe.Pointer(className)), instance)
@@ -184,6 +188,9 @@ func New(iconData []byte, tipText string, callbacks Callbacks) (*Tray, error) {
 	}
 
 	tray := &Tray{hwnd: hwnd, className: className, callbacks: callbacks}
+	if message, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(mustUTF16("TaskbarCreated")))); message != 0 {
+		tray.taskbarCreated = uint32(message)
+	}
 	tray.icon = createIcon(iconData)
 	tray.menu = buildMenu()
 	active = tray
@@ -218,6 +225,22 @@ func appendItem(menu uintptr, flags uintptr, id uintptr, label string) {
 }
 
 func createIcon(data []byte) uintptr {
+	// Prefer the icon embedded in the executable: it is the same bitmap the
+	// shell shows for the app and avoids PNG-frame parsing differences.
+	if executable, err := os.Executable(); err == nil {
+		path, err := windows.UTF16PtrFromString(executable)
+		if err == nil {
+			var large, small uintptr
+			if count, _, _ := procExtractIconExW.Call(uintptr(unsafe.Pointer(path)), 0, uintptr(unsafe.Pointer(&large)), uintptr(unsafe.Pointer(&small)), 1); count > 0 {
+				if large != 0 {
+					_, _, _ = procDestroyIcon.Call(large)
+				}
+				if small != 0 {
+					return small
+				}
+			}
+		}
+	}
 	if len(data) > 0 {
 		icon, _, _ := procCreateIconFromResource.Call(
 			uintptr(unsafe.Pointer(&data[0])),
@@ -290,6 +313,27 @@ func (t *Tray) SetTip(text string) {
 	_, _, _ = procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&data)))
 }
 
+func mustUTF16(value string) *uint16 {
+	pointer, err := windows.UTF16PtrFromString(value)
+	if err != nil {
+		return nil
+	}
+	return pointer
+}
+
+func (t *Tray) iconData() *notifyIconData {
+	data := notifyIconData{
+		Size:            uint32(unsafe.Sizeof(notifyIconData{})),
+		Wnd:             t.hwnd,
+		ID:              notificationID,
+		Flags:           nifMessage | nifIcon | nifTip,
+		CallbackMessage: wmTrayCallback,
+		Icon:            t.icon,
+	}
+	copyTip(&data.Tip, "DSH Backup")
+	return &data
+}
+
 func (t *Tray) messageLoop() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -306,6 +350,11 @@ func (t *Tray) messageLoop() {
 
 func windowProc(hwnd, message, wparam, lparam uintptr) uintptr {
 	tray := active
+	if tray != nil && tray.taskbarCreated != 0 && message == uintptr(tray.taskbarCreated) {
+		// Explorer restarted and dropped every icon; put ours back.
+		_, _, _ = procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(tray.iconData())))
+		return 0
+	}
 	if tray != nil && message == wmTrayCallback && hwnd == tray.hwnd {
 		event := uint32(lparam) & 0xFFFF
 		switch event {
