@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -29,6 +29,7 @@ var (
 	procGetMessageW            = user32.NewProc("GetMessageW")
 	procTranslateMessage       = user32.NewProc("TranslateMessage")
 	procDispatchMessageW       = user32.NewProc("DispatchMessageW")
+	procPostQuitMessage        = user32.NewProc("PostQuitMessage")
 	procDestroyWindow          = user32.NewProc("DestroyWindow")
 	procCreatePopupMenu        = user32.NewProc("CreatePopupMenu")
 	procAppendMenuW            = user32.NewProc("AppendMenuW")
@@ -50,6 +51,7 @@ var (
 const (
 	wmApp          = 0x8000
 	wmTrayCallback = wmApp + 0x2B0
+	wmShutdown     = wmApp + 0x2B1
 	wmNull         = 0x0000
 	wmRButtonUp    = 0x0205
 	wmContextMenu  = 0x007B
@@ -143,25 +145,55 @@ type Tray struct {
 	icon           uintptr
 	menu           uintptr
 	className      *uint16
+	instance       uintptr
 	taskbarCreated uint32
 	callbacks      Callbacks
-
-	mu     sync.Mutex
-	closed bool
+	closed         atomic.Bool
 }
 
 var active *Tray
 
-// New creates the hidden window and adds the notification-area icon. The
-// message loop runs on its own locked OS thread.
+// New creates the window, registers the icon and pumps messages on one locked
+// OS thread. Creating the window elsewhere and pumping on another thread is the
+// classic tray bug: the shell posts to the thread that created the window, so
+// the callback never reaches a loop running on a different thread.
 func New(iconData []byte, tipText string, callbacks Callbacks) (*Tray, error) {
+	tray := &Tray{callbacks: callbacks}
+	ready := make(chan error, 1)
+	go tray.run(iconData, tipText, ready)
+	if err := <-ready; err != nil {
+		return nil, err
+	}
+	return tray, nil
+}
+
+func (t *Tray) run(iconData []byte, tipText string, ready chan<- error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := t.init(iconData, tipText); err != nil {
+		ready <- err
+		return
+	}
+	ready <- nil
+	var message windowMessage
+	for {
+		result, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
+		if int32(result) == -1 || result == 0 {
+			return
+		}
+		_, _, _ = procTranslateMessage.Call(uintptr(unsafe.Pointer(&message)))
+		_, _, _ = procDispatchMessageW.Call(uintptr(unsafe.Pointer(&message)))
+	}
+}
+
+func (t *Tray) init(iconData []byte, tipText string) error {
 	instance, _, _ := procGetModuleHandleW.Call(0)
 	if instance == 0 {
-		return nil, errors.New("无法获取进程模块句柄")
+		return errors.New("无法获取进程模块句柄")
 	}
 	className, err := windows.UTF16PtrFromString("DSHBackupTrayWindow")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	class := wndClassEx{
 		Size:      uint32(unsafe.Sizeof(wndClassEx{})),
@@ -170,7 +202,7 @@ func New(iconData []byte, tipText string, callbacks Callbacks) (*Tray, error) {
 		ClassName: className,
 	}
 	if result, _, callErr := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&class))); result == 0 {
-		return nil, fmt.Errorf("注册托盘窗口失败：%v", callErr)
+		return fmt.Errorf("注册托盘窗口失败：%v", callErr)
 	}
 	windowTitle, _ := windows.UTF16PtrFromString("DSH Backup")
 	// A hidden top-level window, not HWND_MESSAGE: the shell ignores
@@ -184,22 +216,23 @@ func New(iconData []byte, tipText string, callbacks Callbacks) (*Tray, error) {
 	)
 	if hwnd == 0 {
 		_, _, _ = procUnregisterClassW.Call(uintptr(unsafe.Pointer(className)), instance)
-		return nil, fmt.Errorf("创建托盘窗口失败：%v", callErr)
+		return fmt.Errorf("创建托盘窗口失败：%v", callErr)
 	}
-
-	tray := &Tray{hwnd: hwnd, className: className, callbacks: callbacks}
+	t.hwnd = hwnd
+	t.className = className
+	t.instance = instance
 	if message, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(mustUTF16("TaskbarCreated")))); message != 0 {
-		tray.taskbarCreated = uint32(message)
+		t.taskbarCreated = uint32(message)
 	}
-	tray.icon = createIcon(iconData)
-	tray.menu = buildMenu()
-	active = tray
-	if err := tray.addIcon(tipText); err != nil {
-		tray.destroy()
-		return nil, err
+	t.icon = createIcon(iconData)
+	t.menu = buildMenu()
+	active = t
+	if err := t.addIcon(tipText); err != nil {
+		active = nil
+		t.destroy()
+		return err
 	}
-	go tray.messageLoop()
-	return tray, nil
+	return nil
 }
 
 func buildMenu() uintptr {
@@ -297,10 +330,7 @@ func copyTip(destination *[128]uint16, text string) {
 
 // SetTip updates the hover text without touching the icon or the menu.
 func (t *Tray) SetTip(text string) {
-	t.mu.Lock()
-	closed := t.closed
-	t.mu.Unlock()
-	if closed {
+	if t == nil || t.closed.Load() || t.hwnd == 0 {
 		return
 	}
 	data := notifyIconData{
@@ -334,28 +364,22 @@ func (t *Tray) iconData() *notifyIconData {
 	return &data
 }
 
-func (t *Tray) messageLoop() {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	var message windowMessage
-	for {
-		result, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
-		if int32(result) == -1 || result == 0 {
-			return
-		}
-		_, _, _ = procTranslateMessage.Call(uintptr(unsafe.Pointer(&message)))
-		_, _, _ = procDispatchMessageW.Call(uintptr(unsafe.Pointer(&message)))
-	}
-}
-
 func windowProc(hwnd, message, wparam, lparam uintptr) uintptr {
 	tray := active
-	if tray != nil && tray.taskbarCreated != 0 && message == uintptr(tray.taskbarCreated) {
+	if tray == nil {
+		result, _, _ := procDefWindowProcW.Call(hwnd, message, wparam, lparam)
+		return result
+	}
+	if tray.taskbarCreated != 0 && message == uintptr(tray.taskbarCreated) {
 		// Explorer restarted and dropped every icon; put ours back.
 		_, _, _ = procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(tray.iconData())))
 		return 0
 	}
-	if tray != nil && message == wmTrayCallback && hwnd == tray.hwnd {
+	if message == wmShutdown && hwnd == tray.hwnd {
+		tray.destroy()
+		return 0
+	}
+	if message == wmTrayCallback && hwnd == tray.hwnd {
 		event := uint32(lparam) & 0xFFFF
 		switch event {
 		case wmRButtonUp, wmContextMenu:
@@ -403,14 +427,9 @@ func (t *Tray) showMenu() {
 	}
 }
 
+// destroy runs on the tray thread, either during init failure or from the
+// shutdown message, so every Win32 handle is released by its owning thread.
 func (t *Tray) destroy() {
-	t.mu.Lock()
-	if t.closed {
-		t.mu.Unlock()
-		return
-	}
-	t.closed = true
-	t.mu.Unlock()
 	data := notifyIconData{
 		Size: uint32(unsafe.Sizeof(notifyIconData{})),
 		Wnd:  t.hwnd,
@@ -419,26 +438,33 @@ func (t *Tray) destroy() {
 	_, _, _ = procShellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&data)))
 	if t.menu != 0 {
 		_, _, _ = procDestroyMenu.Call(t.menu)
+		t.menu = 0
 	}
 	if t.icon != 0 {
 		_, _, _ = procDestroyIcon.Call(t.icon)
+		t.icon = 0
 	}
 	if t.hwnd != 0 {
 		_, _, _ = procDestroyWindow.Call(t.hwnd)
+		t.hwnd = 0
 	}
-	if t.className != nil {
-		instance, _, _ := procGetModuleHandleW.Call(0)
-		_, _, _ = procUnregisterClassW.Call(uintptr(unsafe.Pointer(t.className)), instance)
+	if t.className != nil && t.instance != 0 {
+		_, _, _ = procUnregisterClassW.Call(uintptr(unsafe.Pointer(t.className)), t.instance)
+		t.className = nil
 	}
 	if active == t {
 		active = nil
 	}
+	_, _, _ = procPostQuitMessage.Call(0)
 }
 
-// Close removes the icon and the hidden window. Safe to call twice.
+// Close asks the tray thread to remove the icon and stop its loop. Safe to
+// call twice and from any goroutine.
 func (t *Tray) Close() {
-	if t == nil {
+	if t == nil || !t.closed.CompareAndSwap(false, true) {
 		return
 	}
-	t.destroy()
+	if t.hwnd != 0 {
+		_, _, _ = procPostMessageW.Call(t.hwnd, wmShutdown, 0, 0)
+	}
 }
