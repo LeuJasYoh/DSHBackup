@@ -145,18 +145,27 @@ func (a *App) quitApplication() {
 	}
 }
 
+func (a *App) logTray(action string) {
+	if a.logger != nil {
+		a.logger.Info("tray."+action, "托盘菜单操作", nil)
+	}
+}
+
 func (a *App) startTray() {
 	if a.tray != nil || len(a.trayIcon) == 0 {
 		return
 	}
 	created, err := tray.New(a.trayIcon, "DSH Backup", tray.Callbacks{
-		Show:             a.showWindow,
-		Backup:           func() { go func() { _, _ = a.StartBackup(false) }() },
-		OpenBackupFolder: func() { _ = a.OpenBackupFolder() },
-		Exit:             a.quitApplication,
+		Show:             func() { a.logTray("show"); a.showWindow() },
+		Backup:           func() { a.logTray("backup"); go func() { _, _ = a.StartBackup(false) }() },
+		OpenBackupFolder: func() { a.logTray("open-folder"); _ = a.OpenBackupFolder() },
+		Exit:             func() { a.logTray("exit"); a.quitApplication() },
 	})
 	if err != nil {
 		a.initWarnings = append(a.initWarnings, "系统托盘不可用："+err.Error())
+		if a.logger != nil {
+			a.logger.Info("tray.unavailable", "系统托盘不可用", map[string]any{"error": err.Error()})
+		}
 		return
 	}
 	a.tray = created
