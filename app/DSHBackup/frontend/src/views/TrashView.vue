@@ -7,7 +7,8 @@ import type { TrashItem } from "../lib/types";
 const items = computed(() => [...trashItems.value].sort((a, b) => Date.parse(b.movedAt) - Date.parse(a.movedAt)));
 const usable = computed(() => items.value.filter((item) => item.restorable).length);
 const reasonLabel = (item: TrashItem) => item.reason === "retention" ? "保留策略" : "手动删除";
-const remaining = (item: TrashItem) => item.daysLeft <= 0 ? "即将清理" : `${item.daysLeft} 天`;
+const remaining = (item: TrashItem) => item.neverExpires ? "永久保留" : item.daysLeft <= 0 ? "即将清理" : `${item.daysLeft} 天`;
+const neverClean = computed(() => (store.boot?.config.retention.trashDays ?? 7) === 0);
 const displayName = (item: TrashItem) => item.archiveName || `dsh-backup-${item.snapshotId}.7z`;
 </script>
 
@@ -18,7 +19,7 @@ const displayName = (item: TrashItem) => item.archiveName || `dsh-backup-${item.
         <div class="eyebrow"><i class="pip" :class="trashCount ? (usable < trashCount ? 'warn' : '') : 'idle'"></i>{{ trashCount ? `${trashCount} 项在回收站，${usable} 项可找回` : "回收站是空的" }}</div>
         <h1>回收站</h1>
         <p class="sub">
-          {{ trashCount }} 项 · 共 {{ formatBytes(trashBytes) }}<span class="sep">·</span>保留 {{ store.boot?.config.retention.trashDays ?? 7 }} 天，到期自动彻底删除<span class="sep">·</span>目录 <span class="mono">{{ store.boot?.trash.root }}</span>
+          {{ trashCount }} 项 · 共 {{ formatBytes(trashBytes) }}<span class="sep">·</span>{{ neverClean ? "不自动清理，只能手动删除或清空" : `保留 ${store.boot?.config.retention.trashDays ?? 7} 天，到期自动彻底删除` }}<span class="sep">·</span>目录 <span class="mono">{{ store.boot?.trash.root }}</span>
         </p>
       </div>
       <div class="head-act">
@@ -90,7 +91,7 @@ const displayName = (item: TrashItem) => item.archiveName || `dsh-backup-${item.
 
     <p class="page-note">
       <svg class="icon"><use href="#i-shield"></use></svg>
-      <span>回收站占用的是备份目录里的空间，清空或到期后才会释放。本应用只管理当前备份目录的回收站；切换到其他备份目录后，旧目录里的回收站不会被自动删除，也不会显示在这里。</span>
+      <span>回收站占用的是备份目录里的空间，清空或到期后才会释放；关闭自动清理后，所有条目只有在找回、彻底删除或清空回收站后才会消失。本应用只管理当前备份目录的回收站；切换到其他备份目录后，旧目录里的回收站不会被自动删除，也不会显示在这里。</span>
     </p>
   </section>
 </template>

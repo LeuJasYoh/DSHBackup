@@ -78,6 +78,7 @@ function pushTrash(snapshot: Snapshot, reason: string, config: Config) {
     archiveMissing: false,
     belongsToCurrentRoot: true,
     restorable: true,
+    neverExpires: (config.retention.trashDays ?? 7) === 0,
   });
   syncTrash();
 }

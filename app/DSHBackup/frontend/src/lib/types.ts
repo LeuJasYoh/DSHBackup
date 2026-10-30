@@ -177,6 +177,7 @@ export interface TrashItem {
   archiveMissing: boolean;
   belongsToCurrentRoot: boolean;
   restorable: boolean;
+  neverExpires: boolean;
   blockedReason?: string;
 }
 export interface TrashList {

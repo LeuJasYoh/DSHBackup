@@ -53,7 +53,10 @@ type Schedule struct {
 }
 
 type Retention struct {
-	Local     int `json:"local"`
+	Local int `json:"local"`
+	// TrashDays is how long the trash keeps anything before auto-cleaning.
+	// Zero means the user chose "never"; it is never implied by a missing
+	// value because the default is 7.
 	TrashDays int `json:"trashDays"`
 }
 
@@ -181,10 +184,7 @@ func (c *Config) Normalize(defaultBackupDir string) {
 	if c.Retention.Local == 0 {
 		c.Retention.Local = 7
 	}
-	if c.Retention.TrashDays == 0 {
-		c.Retention.TrashDays = 7
-	}
-	if c.Retention.TrashDays < 1 {
+	if c.Retention.TrashDays < 0 {
 		c.Retention.TrashDays = 7
 	}
 	if c.Retention.TrashDays > 365 {
@@ -248,8 +248,8 @@ func Validate(cfg Config) error {
 	if cfg.Retention.Local < 1 || cfg.Retention.Local > 99 {
 		return errors.New("本地保留份数必须在 1 到 99 之间")
 	}
-	if cfg.Retention.TrashDays < 1 || cfg.Retention.TrashDays > 365 {
-		return errors.New("回收站保留天数必须在 1 到 365 之间")
+	if cfg.Retention.TrashDays < 0 || cfg.Retention.TrashDays > 365 {
+		return errors.New("回收站保留天数必须在 0 到 365 之间（0 表示不自动清理）")
 	}
 	switch cfg.CloseBehavior {
 	case CloseAsk, CloseExit, CloseTray:

@@ -98,7 +98,7 @@ func TestMoveToTrashAndRestoreRoundTrip(t *testing.T) {
 			t.Fatalf("file missing from trash: %s: %v", name, err)
 		}
 	}
-	list, err := ListTrash(paths.DefaultBackupDir)
+	list, err := ListTrash(paths.DefaultBackupDir, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestRestoreTrashRejectsForeignOrigin(t *testing.T) {
 	if err := RestoreTrashItem(paths.DefaultBackupDir, snapshot.ID); err == nil {
 		t.Fatal("foreign origin accepted")
 	}
-	list, err := ListTrash(paths.DefaultBackupDir)
+	list, err := ListTrash(paths.DefaultBackupDir, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestPurgeExpiredTrashSkipsForeignOrigin(t *testing.T) {
 	if err := writeTrashMeta(itemDir, meta); err != nil {
 		t.Fatal(err)
 	}
-	removed, skipped, _, err := PurgeExpiredTrash(paths.DefaultBackupDir, time.Now())
+	removed, skipped, _, err := PurgeExpiredTrash(paths.DefaultBackupDir, time.Now(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestPurgeExpiredTrashSkipsForeignOrigin(t *testing.T) {
 	if err := writeTrashMeta(itemDir, meta); err != nil {
 		t.Fatal(err)
 	}
-	removed, _, _, err = PurgeExpiredTrash(paths.DefaultBackupDir, time.Now())
+	removed, _, _, err = PurgeExpiredTrash(paths.DefaultBackupDir, time.Now(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,11 +318,84 @@ func TestApplyLocalRetentionMovesToTrash(t *testing.T) {
 	if _, err := os.Stat(second.LocalPath); err != nil {
 		t.Fatalf("protected snapshot should stay: %v", err)
 	}
-	list, err := ListTrash(paths.DefaultBackupDir)
+	list, err := ListTrash(paths.DefaultBackupDir, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if list.Count != 1 || list.Items[0].SnapshotID != first.ID || list.Items[0].Reason != TrashReasonRetention {
 		t.Fatalf("retention did not move the old archive into the trash: %+v", list.Items)
+	}
+}
+
+func TestPurgeCanBeDisabled(t *testing.T) {
+	paths, first := trashFixture(t)
+	if _, err := MoveToTrash(paths.DefaultBackupDir, first, TrashReasonManual, 7, "test"); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.ID = "20261030-150000"
+	second.LocalPath = filepath.Join(paths.DefaultBackupDir, manifest.ArchiveName(second.ID))
+	second.ManifestPath = manifest.ManifestPath(second.LocalPath)
+	if err := os.WriteFile(second.LocalPath, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value := manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		ID:            second.ID,
+		CreatedAt:     "2026-10-30T15:00:00Z",
+		Kind:          manifest.KindManual,
+		Archive: manifest.ArchiveInfo{
+			Name:   manifest.ArchiveName(second.ID),
+			Size:   int64(len("second")),
+			SHA256: strings.Repeat("d", 64),
+		},
+	}
+	if err := manifest.Write(second.ManifestPath, value); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MoveToTrash(paths.DefaultBackupDir, second, TrashReasonRetention, 7, "test"); err != nil {
+		t.Fatal(err)
+	}
+	root := TrashRoot(paths.DefaultBackupDir)
+	for _, id := range []string{first.ID, second.ID} {
+		itemDir := filepath.Join(root, id)
+		meta, err := readTrashMeta(itemDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta.ExpiresAt = time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
+		if err := writeTrashMeta(itemDir, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	list, err := ListTrash(paths.DefaultBackupDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range list.Items {
+		if !item.NeverExpires {
+			t.Fatalf("item %s should be marked as never expiring", item.SnapshotID)
+		}
+	}
+	removed, _, _, err := PurgeExpiredTrash(paths.DefaultBackupDir, time.Now(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("automatic cleaning is off but %d items were removed", removed)
+	}
+	for _, id := range []string{first.ID, second.ID} {
+		if _, err := os.Stat(filepath.Join(root, id)); err != nil {
+			t.Fatalf("trash item %s must survive when auto-clean is off: %v", id, err)
+		}
+	}
+
+	removed, _, _, err = PurgeExpiredTrash(paths.DefaultBackupDir, time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 2 {
+		t.Fatalf("auto-clean should remove both expired items, removed=%d", removed)
 	}
 }

@@ -127,7 +127,8 @@ onUnmounted(() => doc.value?.removeEventListener("scroll", onScroll));
           <section id="help-trash">
             <h3>回收站</h3>
             <p>删除归档只是把它同盘移动到 <span class="mono">&lt;备份目录&gt;\.dshbackup-trash</span>，瞬间完成，可以连续删除，不影响正在运行的备份。保留策略淘汰的旧备份也会进入这里。</p>
-            <p>默认保留 {{ store.boot?.config.retention.trashDays ?? 7 }} 天（可在设置改为 1 / 7 / 30 / 90 天），到期自动彻底删除；也可以手动清空。找回会把归档放回当前备份目录，不覆盖同名文件；回收站与当前备份目录不在同一分区时不允许瞬时找回。</p>
+            <p>默认保留 {{ store.boot?.config.retention.trashDays ?? 7 }} 天（可改为 1 / 7 / 30 / 90 天），到期自动彻底删除。也可以在设置里选择「永不」：回收站不会被自动清理，只有找回、彻底删除或清空才会移除内容。</p>
+            <p>找回会把归档放回当前备份目录，不覆盖同名文件；回收站与当前备份目录不在同一分区时不允许瞬时找回。</p>
             <p>空间要等清空或到期后才释放。本应用只管理当前备份目录的回收站，切换目录后旧目录里的内容不会被自动删除。</p>
           </section>
 

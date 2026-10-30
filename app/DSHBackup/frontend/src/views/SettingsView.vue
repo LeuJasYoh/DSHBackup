@@ -33,6 +33,9 @@ const themeOptions: Array<{ id: Theme; label: string }> = [
 ];
 const weekdayOptions = Array.from({ length: 7 }, (_, day) => ({ value: day, label: weekdayLabel(day) }));
 const dictionaryOptions = [{ value: 0, label: "自动" }, ...[16, 32, 64, 128, 256, 512, 1024].map((size) => ({ value: size, label: `${size} MB` }))];
+const trashRetentionOptions = [
+  { value: 1, label: "1 天" }, { value: 7, label: "7 天" }, { value: 30, label: "30 天" }, { value: 90, label: "90 天" }, { value: 0, label: "永不" },
+];
 const scheduleOptions = [
   { id: "manual", label: "手动" }, { id: "daily", label: "每天" }, { id: "weekly", label: "每周" },
 ] as const;
@@ -428,11 +431,11 @@ function setRetention(delta: number) {
             <h2>回收站</h2>
             <div class="setting-row stacked">
               <div class="setting-copy">
-                <div class="setting-desc">删除的归档先移到备份目录内的回收站，可以随时找回；超过保留天数后自动彻底删除。当前 {{ trashCount }} 项 · {{ formatBytes(trashBytes) }}。</div>
+                <div class="setting-desc">删除的归档先移到备份目录内的回收站，可以随时找回。选择天数则到期自动清理；选择「永不」后，只有找回、彻底删除或清空才会移除内容。当前 {{ trashCount }} 项 · {{ formatBytes(trashBytes) }}。</div>
               </div>
               <div class="setting-control">
-                <div class="segmented" role="group" aria-label="回收站保留天数">
-                  <button v-for="days in [1, 7, 30, 90]" :key="days" type="button" :class="{ active: draft.retention.trashDays === days }" :aria-pressed="draft.retention.trashDays === days" @click="draft.retention.trashDays = days">{{ days }} 天</button>
+                <div class="segmented" role="group" aria-label="回收站保留策略">
+                  <button v-for="option in trashRetentionOptions" :key="option.value" type="button" :class="{ active: draft.retention.trashDays === option.value }" :aria-pressed="draft.retention.trashDays === option.value" @click="draft.retention.trashDays = option.value">{{ option.label }}</button>
                 </div>
                 <button class="btn btn-ghost btn-small" type="button" @click="openTrashFolder()">打开回收站目录</button>
               </div>

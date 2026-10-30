@@ -85,7 +85,7 @@ func (a *App) ListTrash() (backup.TrashList, error) {
 	cfg := a.configSnapshot()
 	a.trashMu.Lock()
 	defer a.trashMu.Unlock()
-	return backup.TrashState(cfg.BackupDir)
+	return backup.TrashState(cfg.BackupDir, cfg.Retention.TrashDays > 0)
 }
 
 func (a *App) RestoreFromTrash(snapshotID string) error {
@@ -161,7 +161,7 @@ func (a *App) OpenTrashFolder() error {
 func (a *App) purgeTrashOnStartup() {
 	cfg := a.configSnapshot()
 	a.trashMu.Lock()
-	removed, skipped, warnings, err := backup.PurgeExpiredTrash(cfg.BackupDir, time.Now())
+	removed, skipped, warnings, err := backup.PurgeExpiredTrash(cfg.BackupDir, time.Now(), cfg.Retention.TrashDays > 0)
 	a.trashMu.Unlock()
 	if a.logger != nil {
 		a.logger.Info("trash.purge", "清理过期回收站内容", map[string]any{"removed": removed, "skipped": skipped, "warnings": len(warnings), "error": errorText(err)})

@@ -231,11 +231,14 @@ func TestLegacyConfigLoadsAndSavesLocalFields(t *testing.T) {
 						t.Fatalf("obsolete field %q was saved", field)
 					}
 				}
-				var retention map[string]int
+				var retention map[string]json.RawMessage
 				if err := json.Unmarshal(saved["retention"], &retention); err != nil {
 					t.Fatal(err)
 				}
-				if len(retention) != 2 || retention["local"] != want.Retention.Local || retention["trashDays"] != 7 {
+				var local, trashDays int
+				_ = json.Unmarshal(retention["local"], &local)
+				_ = json.Unmarshal(retention["trashDays"], &trashDays)
+				if len(retention) != 2 || local != want.Retention.Local || trashDays != 7 {
 					t.Fatalf("unexpected retention: %v", retention)
 				}
 				reloaded, err := Load(path, "unused")
@@ -255,7 +258,7 @@ func TestTrashRetentionDaysNormalize(t *testing.T) {
 		want int
 	}{
 		{`{"retention":{"local":7}}`, 7},
-		{`{"retention":{"local":7,"trashDays":0}}`, 7},
+		{`{"retention":{"local":7,"trashDays":0}}`, 0},
 		{`{"retention":{"local":7,"trashDays":-3}}`, 7},
 		{`{"retention":{"local":7,"trashDays":30}}`, 30},
 		{`{"retention":{"local":7,"trashDays":9000}}`, 365},
@@ -270,6 +273,9 @@ func TestTrashRetentionDaysNormalize(t *testing.T) {
 		}
 		if cfg.Retention.TrashDays != test.want {
 			t.Fatalf("%s: trash days = %d, want %d", test.raw, cfg.Retention.TrashDays, test.want)
+		}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("%s: normalized config must stay valid: %v", test.raw, err)
 		}
 	}
 }

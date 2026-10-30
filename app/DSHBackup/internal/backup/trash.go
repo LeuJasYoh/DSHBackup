@@ -63,6 +63,7 @@ type TrashItem struct {
 	ArchiveMissing       bool   `json:"archiveMissing"`
 	BelongsToCurrentRoot bool   `json:"belongsToCurrentRoot"`
 	Restorable           bool   `json:"restorable"`
+	NeverExpires         bool   `json:"neverExpires"`
 	BlockedReason        string `json:"blockedReason,omitempty"`
 }
 
@@ -335,7 +336,7 @@ func readTrashMeta(itemDir string) (TrashMeta, error) {
 	return meta, nil
 }
 
-func trashItemFromMeta(itemDir string, meta TrashMeta, backupDir, currentRootID string, now time.Time) TrashItem {
+func trashItemFromMeta(itemDir string, meta TrashMeta, backupDir, currentRootID string, now time.Time, autoClean bool) TrashItem {
 	item := TrashItem{
 		SnapshotID:     meta.SnapshotID,
 		ArchiveName:    meta.ArchiveName,
@@ -350,6 +351,7 @@ func trashItemFromMeta(itemDir string, meta TrashMeta, backupDir, currentRootID 
 	}
 	item.BelongsToCurrentRoot = strings.EqualFold(meta.OriginRootID, currentRootID) ||
 		strings.EqualFold(filepath.Clean(meta.OriginBackupDir), filepath.Clean(backupDir))
+	item.NeverExpires = !autoClean
 	if expires, err := time.Parse(time.RFC3339, meta.ExpiresAt); err == nil {
 		item.DaysLeft = int(math.Ceil(expires.Sub(now).Hours() / 24))
 		if item.DaysLeft < 0 {
@@ -390,7 +392,7 @@ func sameVolume(left, right string) bool {
 	return strings.EqualFold(leftVolume, rightVolume)
 }
 
-func ListTrash(backupDir string) (TrashList, error) {
+func ListTrash(backupDir string, autoClean bool) (TrashList, error) {
 	list := TrashList{Items: []TrashItem{}, Root: TrashRoot(backupDir)}
 	root := list.Root
 	entries, err := os.ReadDir(root)
@@ -424,7 +426,7 @@ func ListTrash(backupDir string) (TrashList, error) {
 			list.Items = append(list.Items, TrashItem{SnapshotID: id, BlockedReason: err.Error()})
 			continue
 		}
-		item := trashItemFromMeta(itemDir, meta, backupDir, currentRootID, now)
+		item := trashItemFromMeta(itemDir, meta, backupDir, currentRootID, now, autoClean)
 		list.Items = append(list.Items, item)
 		list.Bytes += item.Size
 	}
@@ -459,7 +461,7 @@ func RestoreTrashItem(backupDir, snapshotID string) error {
 	if err != nil {
 		return fmt.Errorf("无法确认当前备份目录身份：%w", err)
 	}
-	item := trashItemFromMeta(itemDir, meta, backupDir, currentRootID, time.Now())
+	item := trashItemFromMeta(itemDir, meta, backupDir, currentRootID, time.Now(), true)
 	if !item.BelongsToCurrentRoot {
 		return errors.New("该项不属于当前备份目录，已拒绝恢复")
 	}
@@ -582,8 +584,11 @@ func EmptyTrash(backupDir string) (int, []string, error) {
 
 // PurgeExpiredTrash removes expired items only when they demonstrably belong to
 // the current backup root. Anything else is left alone and reported.
-func PurgeExpiredTrash(backupDir string, now time.Time) (int, int, []string, error) {
-	list, err := ListTrash(backupDir)
+func PurgeExpiredTrash(backupDir string, now time.Time, autoClean bool) (int, int, []string, error) {
+	if !autoClean {
+		return 0, 0, nil, nil
+	}
+	list, err := ListTrash(backupDir, autoClean)
 	if err != nil {
 		return 0, 0, nil, err
 	}
@@ -610,9 +615,9 @@ func PurgeExpiredTrash(backupDir string, now time.Time) (int, int, []string, err
 	return removed, skipped, warnings, nil
 }
 
-func TrashState(backupDir string) (TrashList, error) {
-	_, _, purgeWarnings, err := PurgeExpiredTrash(backupDir, time.Now())
-	list, listErr := ListTrash(backupDir)
+func TrashState(backupDir string, autoClean bool) (TrashList, error) {
+	_, _, purgeWarnings, err := PurgeExpiredTrash(backupDir, time.Now(), autoClean)
+	list, listErr := ListTrash(backupDir, autoClean)
 	if listErr != nil {
 		return TrashList{}, listErr
 	}

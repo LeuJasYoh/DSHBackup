@@ -358,6 +358,7 @@ function applyLocalTrashMove(snapshot: Snapshot) {
     archiveMissing: snapshot.status === "missing",
     belongsToCurrentRoot: true,
     restorable: snapshot.status !== "missing",
+    neverExpires: (boot.config.retention.trashDays ?? 7) === 0,
     blockedReason: snapshot.status === "missing" ? "归档文件已缺失，只能彻底删除" : undefined,
   };
   boot.trash.items = [item, ...boot.trash.items];

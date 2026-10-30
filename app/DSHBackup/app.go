@@ -379,7 +379,7 @@ func (a *App) GetBootstrap() (Bootstrap, error) {
 	}
 	rootIdentity, _ := pathguard.Identity(cfg.BackupDir)
 	a.trashMu.Lock()
-	trash, trashErr := backup.TrashState(cfg.BackupDir)
+	trash, trashErr := backup.TrashState(cfg.BackupDir, cfg.Retention.TrashDays > 0)
 	a.trashMu.Unlock()
 	if trashErr != nil {
 		warnings = append(warnings, "读取回收站失败："+trashErr.Error())

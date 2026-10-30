@@ -60,9 +60,15 @@ describe("config validation", () => {
     expect(validateConfig(baseConfig(), "")).toBe("");
   });
 
+  it("accepts zero trash retention as never auto-clean", () => {
+    const never = baseConfig();
+    never.retention.trashDays = 0;
+    expect(validateConfig(never, "")).toBe("");
+  });
+
   it("rejects out-of-range trash retention", () => {
     const low = baseConfig();
-    low.retention.trashDays = 0;
+    low.retention.trashDays = -1;
     expect(validateConfig(low, "")).toContain("回收站保留天数");
     const high = baseConfig();
     high.retention.trashDays = 366;

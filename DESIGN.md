@@ -1412,7 +1412,14 @@ o["--offset-distance"] = t ? e.itemLineLengths[i][0]   // 向上：弧长走到�
 - 只加入 `Warnings`，不删除任何文件；诊断包在发现候选时额外写入 `restore-candidates.txt`。
 - 集成测试在目标目录预置一个候选文件，断言恢复结果里出现该警告。
 
-### 30.3 未做
+### 30.3 回收站「永不」选项
+
+- `retention.trashDays = 0` 表示不自动清理；配置归一化只在负数时回落到 7，0 是用户显式选择。
+- 自动清理关闭时 `PurgeExpiredTrash` 直接返回，不读取也不删除任何条目；列表把每一项标记为 `neverExpires`，
+  回收站页显示「永久保留」，只有找回、彻底删除或清空会移除内容。
+- 该选项与删除原因无关：手动删除与保留策略淘汰的条目都适用。
+
+### 30.4 未做
 
 - 跨介质矩阵（exFAT / SMB / 外接盘）按用户要求跳过，不写未经验证的结论。
 - Bootstrap revision、overlapped pipe、ACL 保留仍然不做；它们不改变用户可见行为。
