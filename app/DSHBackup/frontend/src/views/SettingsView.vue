@@ -6,37 +6,25 @@ import { applyTheme } from "../lib/theme";
 import { checkForUpdates, isBusy, openBackupFolder, openDataFolder, openKeysFolder, openLogsFolder, openReleasePage, openRepository, pickDirectory, saveConfig, store } from "../store";
 import type { CompressionLevel, Config, SettingsSection, Theme } from "../lib/types";
 
-interface RailItem { id: SettingsSection; label: string; child?: boolean; when?: () => boolean }
-const railGroups: RailItem[][] = [
-  [
-    { id: "backup-dir", label: "备份目录" },
-    { id: "desktop", label: "包含桌面登录态" },
-    { id: "verify", label: "备份后自动校验" },
-    { id: "prerestore", label: "恢复前创建快照" },
-  ],
-  [
-    { id: "schedule", label: "计划与保留" },
-    { id: "schedule-time", label: "执行时间", child: true, when: () => draft.value?.schedule.kind !== "manual" },
-    { id: "schedule-keep", label: "保留份数", child: true },
-  ],
-  [
-    { id: "compress", label: "压缩" },
-    { id: "compress-advanced", label: "高级参数", child: true },
-  ],
-  [
-    { id: "encryption", label: "本地加密" },
-    { id: "keys", label: "本地密钥" },
-    { id: "diagnostics", label: "诊断" },
-  ],
-  [
-    { id: "theme", label: "外观" },
-    { id: "update", label: "更新" },
-    { id: "runtime", label: "运行环境" },
-  ],
+interface RailItem { id: SettingsSection; label: string; depth?: 2; when?: () => boolean }
+/* 目录是一棵树，不是一组分开的列表：depth 2 挂在上一条 depth 1 下，导轨线在行间拐圆角弯。 */
+const railItems: RailItem[] = [
+  { id: "backup-dir", label: "备份目录" },
+  { id: "desktop", label: "包含桌面登录态" },
+  { id: "verify", label: "备份后自动校验" },
+  { id: "prerestore", label: "恢复前创建快照" },
+  { id: "schedule", label: "计划与保留" },
+  { id: "schedule-time", label: "执行时间", depth: 2, when: () => draft.value?.schedule.kind !== "manual" },
+  { id: "schedule-keep", label: "保留份数", depth: 2 },
+  { id: "compress", label: "压缩" },
+  { id: "compress-advanced", label: "高级参数", depth: 2 },
+  { id: "encryption", label: "本地加密" },
+  { id: "keys", label: "本地密钥" },
+  { id: "diagnostics", label: "诊断" },
+  { id: "theme", label: "外观" },
+  { id: "update", label: "更新" },
+  { id: "runtime", label: "运行环境" },
 ];
-const visibleGroups = computed(() => railGroups
-  .map((group) => group.filter((item) => !item.when || item.when()))
-  .filter((group) => group.length > 0));
 
 const themeOptions: Array<{ id: Theme; label: string }> = [
   { id: "system", label: "跟随系统" }, { id: "light", label: "亮色" }, { id: "dark", label: "暗色" },
@@ -91,48 +79,163 @@ watch(() => store.page, (page) => {
   else applyTheme(boot.value.config.theme, true);
 });
 
-/* 目录导航：滚动高亮 + 点击跳转 */
-const docEl = ref<HTMLElement | null>(null);
-const activeSection = ref<SettingsSection>("backup-dir");
+/* 目录导航：一条连续的树形导轨 + 滑动的当前区段，滚动高亮与点击跳转共用 .content 一个滚动容器 */
+const pageEl = ref<HTMLElement | null>(null);
+const railEl = ref<HTMLElement | null>(null);
+const activeRange = ref<[number, number]>([0, 0]);
+const dotLeadTop = ref(false);
 const reduceMotion = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+const ROW = 32;
+const RAIL_X = { 1: 8.5, 2: 16.5 } as const;
 
-function sectionEl(id: SettingsSection): HTMLElement | null {
-  return docEl.value?.querySelector<HTMLElement>(`#sec-${id}`) ?? null;
-}
-function offsetInDoc(el: HTMLElement): number {
-  const root = docEl.value!;
-  return el.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
-}
-function onDocScroll() {
-  if (!docEl.value) return;
-  const root = docEl.value;
-  const top = root.scrollTop;
-  const items = visibleGroups.value.flat();
-  // 最后一段永远滚不到顶部，滚到底时直接把它标为当前。
-  if (top + root.clientHeight >= root.scrollHeight - 4 && items.length) {
-    activeSection.value = items[items.length - 1].id;
-    return;
+const visibleItems = computed(() => railItems.filter((item) => !item.when || item.when()));
+const railRows = computed(() => visibleItems.value.length * ROW);
+const railX = (item: RailItem) => RAIL_X[item.depth === 2 ? 2 : 1];
+/* 每两段之间画一条 12px 的三次曲线：同深度时控制点不偏移，看起来就是直线；换深度时自然拐进子列。 */
+const railPath = computed(() => {
+  const items = visibleItems.value;
+  if (!items.length) return "";
+  const parts = [`M ${railX(items[0])} 0`];
+  for (let i = 0; i < items.length - 1; i += 1) {
+    const b = (i + 1) * ROW;
+    const a = railX(items[i]);
+    const c = railX(items[i + 1]);
+    parts.push(`L ${a} ${b - 12} C ${a} ${b - 4} ${c} ${b - 8} ${c} ${b + 12}`);
   }
-  let best: SettingsSection = "backup-dir";
-  for (const item of items) {
-    const el = sectionEl(item.id);
-    if (el && offsetInDoc(el) - top <= 24) best = item.id;
-  }
-  activeSection.value = best;
-}
-function jumpTo(id: SettingsSection) {
-  const el = sectionEl(id);
-  if (!el || !docEl.value) return;
-  docEl.value.scrollTo({ top: Math.max(0, offsetInDoc(el) - 4), behavior: reduceMotion ? "auto" : "smooth" });
-  activeSection.value = id;
-}
-let docObserver: ResizeObserver | null = null;
-onMounted(() => {
-  if (typeof ResizeObserver !== "function" || !docEl.value) return;
-  docObserver = new ResizeObserver(() => onDocScroll());
-  docObserver.observe(docEl.value);
+  parts.push(`L ${railX(items[items.length - 1])} ${items.length * ROW}`);
+  return parts.join(" ");
 });
-onUnmounted(() => docObserver?.disconnect());
+const isActive = (index: number) => index >= activeRange.value[0] && index <= activeRange.value[1];
+/* 高亮窗口覆盖「当前落在阅读带里的全部标题」，所以短小节会连成一段，而不是一格一格的点。
+   上下各让出 6px 行内边距，括号正好框住文字本身，而不是压在行缝上。 */
+const trackTop = computed(() => activeRange.value[0] * ROW + 6);
+const trackBottom = computed(() => activeRange.value[1] * ROW + ROW - 6);
+const markStyle = computed(() => ({
+  height: `${railRows.value}px`,
+  "--tt": `${trackTop.value}px`,
+  "--tb": `${trackBottom.value}px`,
+}));
+/* 圆点始终走在行进方向的前端：向下滚停在区段下沿，向上滚翻到区段上沿。 */
+const dotStyle = computed(() => {
+  const items = visibleItems.value;
+  const lead = dotLeadTop.value ? items[activeRange.value[0]] : items[activeRange.value[1]];
+  const y = dotLeadTop.value ? trackTop.value : trackBottom.value;
+  return {
+    transform: `translate(${(lead ? railX(lead) : RAIL_X[1]) - 2}px, ${y - 2}px)`,
+    opacity: lead ? 1 : 0,
+  };
+});
+
+const scroller = ref<HTMLElement | null>(null);
+const railTop = ref(0);
+const railScrolls = ref(false);
+let offsets: number[] = [];
+let railBox = { client: 0, full: 0 };
+let band = 320;
+
+/* 参考页的阅读带是整个视口，因为它每节平均 600px 高；我们每节只有 130px 左右，
+   照搬会把半条目录都点亮。所以按「中位节高 × 1.5」换算，让它同样落在 1–2 节、偶尔 3 节。 */
+function fitBand(clientHeight: number) {
+  const gaps: number[] = [];
+  for (let i = 1; i < offsets.length; i += 1) gaps.push(offsets[i] - offsets[i - 1]);
+  gaps.sort((a, c) => a - c);
+  const median = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 320;
+  band = Math.max(160, Math.min(median * 1.5, clientHeight - 32));
+}
+
+/** 只在挂载、尺寸变化和目录项增减时量一次，滚动过程中绝不回读布局。 */
+function measure() {
+  const root = scroller.value;
+  const items = visibleItems.value;
+  if (!root) return;
+  const bar = root.querySelector<HTMLElement>(".topbar");
+  railTop.value = bar ? Math.ceil(bar.getBoundingClientRect().height) : 0;
+  const base = root.getBoundingClientRect().top - root.scrollTop;
+  offsets = items.map((item) => {
+    const el = document.getElementById(`sec-${item.id}`);
+    return el ? el.getBoundingClientRect().top - base : 0;
+  });
+  railBox = { client: railEl.value?.clientHeight ?? 0, full: railEl.value?.scrollHeight ?? 0 };
+  railScrolls.value = railBox.full > railBox.client + 1;
+  fitBand(root.clientHeight);
+}
+
+/* 阅读带：从顶栏下沿往下量 band。参考页实测其下边界在 [H-43, H-14) 之间，取 H-32 作上限。 */
+function spy() {
+  const root = scroller.value;
+  const items = visibleItems.value;
+  if (!root || !items.length || !offsets.length) return;
+  const bandTop = root.scrollTop + railTop.value;
+  const bandBottom = Math.min(bandTop + band, root.scrollTop + root.clientHeight - 32);
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < offsets.length; i += 1) {
+    if (offsets[i] >= bandTop && offsets[i] <= bandBottom) {
+      if (first < 0) first = i;
+      last = i;
+    }
+  }
+  if (first < 0) {
+    // 带内一个标题都没有（当前小节特别长）：沿用最后一个越过的，别让导轨整段空掉。
+    for (let i = 0; i < offsets.length; i += 1) if (offsets[i] <= bandTop) last = i;
+    first = Math.max(0, last);
+  }
+  // 触底时最后一节的标题可能已经划出阅读带，但它确实是眼前这段内容。
+  if (root.scrollTop + root.clientHeight >= root.scrollHeight - 4) last = items.length - 1;
+  const previous = activeRange.value;
+  // 区间往前挪是向下读，往后缩是向上读；区间没变就沿用上一次的方向。
+  dotLeadTop.value = previous[0] > first
+    || previous[1] > last
+    || (previous[0] === first && previous[1] === last && dotLeadTop.value);
+  if (previous[0] !== first || previous[1] !== last) activeRange.value = [first, last];
+  keepActiveVisible();
+}
+
+/* 反向联动：文档滚到哪，目录就把自己滚到哪，让当前行始终在导轨里居中。 */
+function keepActiveVisible() {
+  const rail = railEl.value;
+  if (!rail || !railScrolls.value) return;
+  const target = Math.max(0, Math.min(
+    activeRange.value[0] * ROW - (railBox.client - ROW) / 2,
+    railBox.full - railBox.client,
+  ));
+  if (Math.abs(rail.scrollTop - target) > 0.5) rail.scrollTop = target;
+}
+
+let frame = 0;
+function onScroll() {
+  if (frame) return;
+  frame = requestAnimationFrame(() => { frame = 0; spy(); });
+}
+
+function jumpTo(id: SettingsSection) {
+  const root = scroller.value;
+  if (!root) return;
+  measure();
+  const index = visibleItems.value.findIndex((item) => item.id === id);
+  if (index < 0) return;
+  // 不预设 active：让滚动监听带着指示器一路滑过去，抢先赋值会出现跳到目标再被拽回来的二次抖动。
+  root.scrollTo({ top: Math.max(0, offsets[index] - railTop.value - 8), behavior: reduceMotion ? "auto" : "smooth" });
+}
+
+let layoutObserver: ResizeObserver | null = null;
+onMounted(() => {
+  scroller.value = pageEl.value?.closest(".content") as HTMLElement | null;
+  scroller.value?.addEventListener("scroll", onScroll, { passive: true });
+  if (typeof ResizeObserver === "function" && pageEl.value) {
+    layoutObserver = new ResizeObserver(() => { measure(); spy(); });
+    layoutObserver.observe(pageEl.value);
+    if (scroller.value) layoutObserver.observe(scroller.value);
+  }
+  measure();
+  spy();
+});
+onUnmounted(() => {
+  if (frame) cancelAnimationFrame(frame);
+  scroller.value?.removeEventListener("scroll", onScroll);
+  layoutObserver?.disconnect();
+});
+watch(visibleItems, () => { measure(); spy(); });
 watch(() => store.settingsSection, (id) => { if (store.page === "settings") void nextTick(() => jumpTo(id)); });
 
 function discard() {
@@ -186,7 +289,7 @@ function setRetention(delta: number) {
 </script>
 
 <template>
-  <section class="page settings-page" :class="{ active: store.page === 'settings' }">
+  <section ref="pageEl" class="page settings-page" :class="{ active: store.page === 'settings' }">
     <div class="head">
       <div class="head-main">
         <div class="eyebrow"><i class="pip" :class="{ warn: dirty }"></i>{{ dirty ? "有未保存的修改" : "当前设置已保存" }}</div>
@@ -195,27 +298,31 @@ function setRetention(delta: number) {
       </div>
     </div>
 
-    <div v-if="draft" class="settings-body">
+    <div v-if="draft" class="settings-body" :style="{ '--rail-top': railTop + 'px' }">
       <div class="settings-rail">
-        <nav class="settings-nav" aria-label="设置目录">
+        <nav ref="railEl" class="settings-nav" aria-label="设置目录" :data-scrollable="railScrolls">
           <div class="rail-title">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M21 5H3M15 12H3M17 19H3"/></svg>
             <span>目录</span>
           </div>
-          <div v-for="(group, index) in visibleGroups" :key="index" class="rail-group">
+          <div class="rail-list">
+            <svg class="rail-tree rail-tree-base" :style="{ height: railRows + 'px' }" :viewBox="`0 0 25 ${railRows}`" aria-hidden="true"><path :d="railPath" /></svg>
+            <svg class="rail-tree rail-tree-mark" :style="markStyle" :viewBox="`0 0 25 ${railRows}`" aria-hidden="true"><path :d="railPath" /></svg>
+            <i class="rail-dot" :style="dotStyle" aria-hidden="true"></i>
             <a
-              v-for="item in group"
+              v-for="(item, index) in visibleItems"
               :key="item.id"
+              class="rail-item"
               :href="`#sec-${item.id}`"
-              :class="{ child: item.child }"
-              :data-active="activeSection === item.id"
+              :data-depth="item.depth === 2 ? 2 : 1"
+              :data-active="isActive(index)"
               @click.prevent="jumpTo(item.id)"
             >{{ item.label }}</a>
           </div>
         </nav>
       </div>
 
-      <div ref="docEl" class="settings-doc" @scroll.passive="onDocScroll">
+      <div class="settings-doc">
         <div v-if="externalUpdate" class="callout settings-callout">
           <svg class="icon"><use href="#i-alert"></use></svg>
           <span>已保存的配置有更新。你的草稿未被覆盖；放弃修改可载入最新配置，保存则以当前草稿为准。</span>

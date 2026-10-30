@@ -35,9 +35,9 @@ function makeSnapshot(id: string, date: Date, config: Config): Snapshot {
 const bootstrap: Bootstrap = {
   config: baseConfig,
   app: {
-    version: "1.2.0", buildTime: "2026-10-26T19:00:00+08:00", platform: "windows/amd64", writable: true, portable: true, warnings: [],
+    version: "1.2.1", buildTime: "2026-10-26T19:00:00+08:00", platform: "windows/amd64", writable: true, portable: true, warnings: [],
     sevenZip: { path: "tools\\7za.exe", version: "7-Zip (a) 26.05 (x64)", ok: true },
-    sidecar: { path: "dsh-backup-core.exe", version: "1.2.0", ok: true },
+    sidecar: { path: "dsh-backup-core.exe", version: "1.2.1", ok: true },
   },
   paths: { appDir: root, dataDir: `${root}\\data`, configDir: `${root}\\data\\config`, logsDir: `${root}\\data\\logs`, keysDir: `${root}\\data\\keys`, backupDir: baseConfig.backupDir, defaultBackupDir: baseConfig.backupDir },
   dsh: {
@@ -194,8 +194,8 @@ export const mockApi = {
     const currentVersion = bootstrap.app.version;
     if (params.get("update") === "1") {
       return {
-        currentVersion, latestVersion: "1.2.0", available: true, checkedAt: new Date().toISOString(),
-        url: "https://github.com/LeuJasYoh/DSHBackup/releases/tag/v1.2.0", publishedAt: "2026-10-30T10:00:00Z",
+        currentVersion, latestVersion: "1.2.2", available: true, checkedAt: new Date().toISOString(),
+        url: "https://github.com/LeuJasYoh/DSHBackup/releases/tag/v1.2.2", publishedAt: "2026-10-30T10:00:00Z",
       };
     }
     return { currentVersion, latestVersion: currentVersion, available: false, checkedAt: new Date().toISOString(), url: "https://github.com/LeuJasYoh/DSHBackup/releases" };
