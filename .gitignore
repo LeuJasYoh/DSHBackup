@@ -8,6 +8,9 @@
 /Backup-DSH.ps1
 /Restore-DSH.ps1
 
+# Static design mock; the real UI lives in app/DSHBackup/frontend
+/ui-preview/
+
 # Keep the bundled 7-Zip package lean
 /tools/7zip/*.7z
 /tools/7zip/7z2605-extra/*

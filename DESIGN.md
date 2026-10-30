@@ -585,7 +585,7 @@ Rust 底层 sidecar
 ## 12. 首启与 UI 信息架构
 
 > UI 已按静态预览落地为 Vue3 + Wails 应用。以下是实际界面基线。
-> 设计预览入口：`ui-preview/index.html`；正式应用入口为 `app/DSHBackup/frontend`。
+> 正式应用入口为 `app/DSHBackup/frontend`（当初对照用的静态预览页已删除，见第 18.2 节）。
 
 ### 12.1 首启流程
 
@@ -661,17 +661,14 @@ Rust 底层 sidecar
 - 主操作是“立即备份”，恢复为次级操作
 - 恢复和 GitHub 授权使用弹窗；备份进度使用页面内卡片
 
-图标和预览资源全部本地化，不依赖联网：
+图标资源全部本地化，不依赖联网：
 
 | 文件 | 用途 |
 |---|---|
-| `ui-preview/icon.svg` | 透明背景鲸鱼 SVG，favicon 和界面 Logo |
-| `ui-preview/icon.png` | 512×512 透明背景 PNG，应用图标源文件 |
-| `ui-preview/icon.ico` | 256×256 Windows ICO |
-| `ui-preview/index.html` | 静态预览入口 |
-| `ui-preview/styles.css` | 预览样式 |
-| `ui-preview/app.js` | 预览交互和模拟流程 |
-| `ui-preview/shots/` | 各界面截图 |
+| `frontend/public/icon.svg` | 透明背景鲸鱼 SVG，favicon 和界面 Logo |
+| `frontend/public/icon.png` | 512×512 透明背景 PNG，应用图标源文件 |
+| `build/appicon.png` | Wails 用的应用图标 PNG（与上面同源同哈希） |
+| `build/windows/icon.ico` | 256×256 Windows ICO，打包时复制为发布包里的 `icon.ico` |
 
 图标规则：
 
@@ -787,18 +784,20 @@ Rust 底层 sidecar
 - 云端加密作为独立只读状态，显示为“始终开启”
 - 备份进度在主界面卡片内展示；恢复和 GitHub 授权使用弹窗
 - 图标只使用鲸鱼图形，透明背景，不带圆角方块底座
-- 图标和预览资源全部本地化，不依赖网络
+- 图标资源全部本地化，不依赖网络
 - 界面已落地到 `app/DSHBackup/frontend/src`，包含首启、概览、历史、设置六个标签、恢复/GitHub/确认弹窗
 
-### 18.2 预览资产
+### 18.2 预览资产（已删除）
 
-静态预览和截图位于 `ui-preview/`，包括：
+早期用来对照设计的静态预览页 `ui-preview/`（`index.html`、`styles.css`、`app.js` 加 `shots/` 截图）
+已在 v1.2.1 之后从仓库删除：界面早已落地到真实应用，这套静态页既不参与 `build.ps1` / `wails build` / Vite 的任何环节，
+里面的图标又和 `frontend/public/`、`build/windows/` 下的正式资源逐字节相同，属于纯重复。
 
-- `index.html`：预览入口
-- `styles.css`：视觉样式
-- `app.js`：交互和模拟流程
-- `icon.svg`、`icon.png`、`icon.ico`：本地图标资源
-- `shots/`：首启、主界面、设置、网络、恢复、GitHub 等截图
+图标资源本身没有丢，现在的唯一副本见第 13 章那张表：`frontend/public/icon.svg`、`frontend/public/icon.png`、
+`build/appicon.png`、`build/windows/icon.ico`。`.gitignore` 里加了 `/ui-preview/`，避免再被顺手提交回来。
+
+另外区分一下：`frontend/src/lib/mock.ts` **不是**预览产物，它是只在 `import.meta.env.DEV` 且无 Wails 宿主时才加载的
+开发态桩件（`bridge.ts` 里由 Vite 在生产构建时整块消除），删掉会让浏览器里的开发预览跑不起来，所以保留。
 
 ### 18.3 下一步（v1.x 可选）
 
