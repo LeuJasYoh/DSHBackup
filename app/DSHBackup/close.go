@@ -128,7 +128,7 @@ func (a *App) focusWindow() {
 	runtime.WindowSetAlwaysOnTop(a.ctx, true)
 	go func() {
 		time.Sleep(300 * time.Millisecond)
-		if a.ctx != nil {
+		if a.ctx != nil && !a.quitting.Load() {
 			runtime.WindowSetAlwaysOnTop(a.ctx, false)
 		}
 	}()

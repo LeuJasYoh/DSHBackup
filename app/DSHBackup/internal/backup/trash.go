@@ -78,6 +78,26 @@ func TrashRoot(backupDir string) string {
 	return filepath.Join(backupDir, TrashDirName)
 }
 
+// checkTrashRoot refuses a trash directory that is itself a link, so deletes
+// and moves never reach through it into an unrelated location.
+func checkTrashRoot(root string) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("回收站路径不是目录")
+	}
+	reparse, err := pathguard.IsReparsePoint(root)
+	if err != nil {
+		return fmt.Errorf("无法检查回收站目录：%w", err)
+	}
+	if reparse {
+		return errors.New("回收站目录是链接或重解析点，已拒绝操作")
+	}
+	return nil
+}
+
 func validSnapshotID(id string) error {
 	if id == "" || id == "." || id == ".." {
 		return errors.New("快照 ID 无效")
@@ -197,6 +217,9 @@ func MoveToTrash(backupDir string, snapshot manifest.Snapshot, reason string, re
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return TrashMeta{}, fmt.Errorf("无法创建回收站目录：%w", err)
+	}
+	if err := checkTrashRoot(root); err != nil {
+		return TrashMeta{}, err
 	}
 	_ = platform.SetHidden(root)
 	if err := os.Mkdir(itemDir, 0o755); err != nil {
@@ -390,6 +413,10 @@ func ListTrash(backupDir string) (TrashList, error) {
 			continue
 		}
 		itemDir := filepath.Join(root, id)
+		if reparse, err := pathguard.IsReparsePoint(itemDir); err == nil && reparse {
+			list.Warnings = append(list.Warnings, "回收站条目是链接或重解析点，已跳过："+id)
+			continue
+		}
 		meta, err := readTrashMeta(itemDir)
 		if err != nil {
 			// Keep unreadable entries visible so they can be removed by hand,
@@ -420,6 +447,9 @@ func RestoreTrashItem(backupDir, snapshotID string) error {
 	}
 	if !inside {
 		return errors.New("拒绝操作回收站之外的文件")
+	}
+	if err := checkTrashRoot(root); err != nil {
+		return err
 	}
 	meta, err := readTrashMeta(itemDir)
 	if err != nil {
@@ -489,6 +519,9 @@ func DeleteTrashItem(backupDir, snapshotID string) error {
 	itemDir := filepath.Join(root, snapshotID)
 	if !strings.EqualFold(filepath.Dir(itemDir), root) {
 		return errors.New("拒绝删除回收站之外的文件")
+	}
+	if err := checkTrashRoot(root); err != nil {
+		return err
 	}
 	info, err := os.Lstat(itemDir)
 	if err != nil {
@@ -578,14 +611,15 @@ func PurgeExpiredTrash(backupDir string, now time.Time) (int, int, []string, err
 }
 
 func TrashState(backupDir string) (TrashList, error) {
-	if _, _, _, err := PurgeExpiredTrash(backupDir, time.Now()); err != nil {
-		// A purge failure must never hide the list itself.
-		list, listErr := ListTrash(backupDir)
-		if listErr != nil {
-			return TrashList{}, listErr
-		}
-		list.Warnings = append(list.Warnings, "清理过期回收站内容失败："+err.Error())
-		return list, nil
+	_, _, purgeWarnings, err := PurgeExpiredTrash(backupDir, time.Now())
+	list, listErr := ListTrash(backupDir)
+	if listErr != nil {
+		return TrashList{}, listErr
 	}
-	return ListTrash(backupDir)
+	list.Warnings = append(list.Warnings, purgeWarnings...)
+	if err != nil {
+		// A purge failure must never hide the list itself.
+		list.Warnings = append(list.Warnings, "清理过期回收站内容失败："+err.Error())
+	}
+	return list, nil
 }

@@ -21,27 +21,27 @@ var (
 	shell32  = syscall.NewLazyDLL("shell32.dll")
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 
-	procRegisterClassExW        = user32.NewProc("RegisterClassExW")
-	procUnregisterClassW        = user32.NewProc("UnregisterClassW")
-	procCreateWindowExW         = user32.NewProc("CreateWindowExW")
-	procDefWindowProcW          = user32.NewProc("DefWindowProcW")
-	procGetMessageW             = user32.NewProc("GetMessageW")
-	procTranslateMessage        = user32.NewProc("TranslateMessage")
-	procDispatchMessageW        = user32.NewProc("DispatchMessageW")
-	procDestroyWindow           = user32.NewProc("DestroyWindow")
-	procCreatePopupMenu         = user32.NewProc("CreatePopupMenu")
-	procAppendMenuW             = user32.NewProc("AppendMenuW")
-	procDestroyMenu             = user32.NewProc("DestroyMenu")
-	procTrackPopupMenuEx        = user32.NewProc("TrackPopupMenuEx")
-	procGetCursorPos            = user32.NewProc("GetCursorPos")
-	procSetForegroundWindow     = user32.NewProc("SetForegroundWindow")
-	procPostMessageW            = user32.NewProc("PostMessageW")
-	procCreateIconFromResource  = user32.NewProc("CreateIconFromResourceEx")
-	procDestroyIcon             = user32.NewProc("DestroyIcon")
-	procLoadIconW               = user32.NewProc("LoadIconW")
-	procGetModuleHandleW        = kernel32.NewProc("GetModuleHandleW")
-	procShellNotifyIconW        = shell32.NewProc("Shell_NotifyIconW")
-	wndProcCallback             = syscall.NewCallback(windowProc)
+	procRegisterClassExW       = user32.NewProc("RegisterClassExW")
+	procUnregisterClassW       = user32.NewProc("UnregisterClassW")
+	procCreateWindowExW        = user32.NewProc("CreateWindowExW")
+	procDefWindowProcW         = user32.NewProc("DefWindowProcW")
+	procGetMessageW            = user32.NewProc("GetMessageW")
+	procTranslateMessage       = user32.NewProc("TranslateMessage")
+	procDispatchMessageW       = user32.NewProc("DispatchMessageW")
+	procDestroyWindow          = user32.NewProc("DestroyWindow")
+	procCreatePopupMenu        = user32.NewProc("CreatePopupMenu")
+	procAppendMenuW            = user32.NewProc("AppendMenuW")
+	procDestroyMenu            = user32.NewProc("DestroyMenu")
+	procTrackPopupMenuEx       = user32.NewProc("TrackPopupMenuEx")
+	procGetCursorPos           = user32.NewProc("GetCursorPos")
+	procSetForegroundWindow    = user32.NewProc("SetForegroundWindow")
+	procPostMessageW           = user32.NewProc("PostMessageW")
+	procCreateIconFromResource = user32.NewProc("CreateIconFromResourceEx")
+	procDestroyIcon            = user32.NewProc("DestroyIcon")
+	procLoadIconW              = user32.NewProc("LoadIconW")
+	procGetModuleHandleW       = kernel32.NewProc("GetModuleHandleW")
+	procShellNotifyIconW       = shell32.NewProc("Shell_NotifyIconW")
+	wndProcCallback            = syscall.NewCallback(windowProc)
 )
 
 const (
@@ -55,6 +55,7 @@ const (
 	ninKeySelect   = 0x0401
 
 	nimAdd        = 0
+	nimModify     = 1
 	nimDelete     = 2
 	nimSetVersion = 4
 
@@ -286,7 +287,7 @@ func (t *Tray) SetTip(text string) {
 		Flags: nifTip,
 	}
 	copyTip(&data.Tip, text)
-	_, _, _ = procShellNotifyIconW.Call(1, uintptr(unsafe.Pointer(&data))) // NIM_MODIFY
+	_, _, _ = procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&data)))
 }
 
 func (t *Tray) messageLoop() {
