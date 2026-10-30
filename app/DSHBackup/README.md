@@ -80,6 +80,10 @@ go test ./...
 cd sidecar
 cargo test
 cargo clippy --locked --all-targets -- -D warnings
+
+# 前端
+cd frontend
+npm run test
 ```
 
 Go 集成测试优先使用 `sidecar\target\release\dsh-backup-core.exe`，并需要存在 `..\..\tools\7zip\7z2605-extra\x64\7za.exe`；缺失时测试会跳过。发布验收前应先构建 release sidecar，不能把跳过当作通过。
@@ -114,6 +118,8 @@ packaging/               便携版说明与第三方许可证
 ## 已知限制
 
 - 计划任务只在应用运行时触发，不注册 Windows 计划任务；不在应用关闭期间追补
+- 删除归档只是移到备份目录内的 `.dshbackup-trash`，到期或手动清空才释放空间；切换备份目录不会自动清理旧目录的回收站
+- 系统托盘用 `Shell_NotifyIcon` 自建（Wails v2 没有 Windows 托盘后端）；关闭行为保存在配置里
 - 不自动安装更新（可选只读检查 GitHub 发行版并提示）、不提供代码签名、VSS、增量/去重、Linux UI
 - 恢复逐文件提交，不是整树事务；中途失败不会自动回滚已提交文件；不保存/恢复自定义 ACL
 - 极端退出可能留下目标旁的 `.dshbak-*.tmp` 候选，程序不会自动删除无法确认归属的外部文件

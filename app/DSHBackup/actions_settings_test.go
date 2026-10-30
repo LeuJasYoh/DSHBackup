@@ -361,3 +361,101 @@ func TestDiagnosticsExcludeKeysAndCredentials(t *testing.T) {
 		}
 	}
 }
+
+func seedLocalSnapshot(t *testing.T, app *App) (manifest.Snapshot, string) {
+	t.Helper()
+	if err := os.MkdirAll(app.paths.BackupDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "20261030-140000"
+	archive := filepath.Join(app.paths.BackupDir(), manifest.ArchiveName(id))
+	if err := os.WriteFile(archive, []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sha := strings.Repeat("c", 64)
+	value := manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		ID:            id,
+		CreatedAt:     "2026-10-30T14:00:00Z",
+		Kind:          manifest.KindManual,
+		Archive: manifest.ArchiveInfo{
+			Name:   manifest.ArchiveName(id),
+			Size:   int64(len("archive")),
+			SHA256: sha,
+		},
+	}
+	if err := manifest.Write(manifest.ManifestPath(archive), value); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, _, err := manifest.Scan(app.paths.BackupDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.ID == id {
+			return snapshot, sha
+		}
+	}
+	t.Fatal("seeded snapshot not visible to Scan")
+	return manifest.Snapshot{}, ""
+}
+
+func TestTrashDoesNotNeedTheTaskSlot(t *testing.T) {
+	app := newTestApp(t)
+	snapshot, sha := seedLocalSnapshot(t, app)
+	identity, err := pathguard.Identity(app.paths.BackupDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID, _, err := app.beginTask("backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.finishTask(taskID)
+	err = app.MoveToTrash(MoveToTrashRequest{
+		SnapshotID:           snapshot.ID,
+		ExpectedRootIdentity: identity,
+		ExpectedBackupDir:    app.paths.BackupDir(),
+		ExpectedSHA256:       sha,
+	})
+	if err != nil {
+		t.Fatalf("a running task must not block moving a backup to the trash: %v", err)
+	}
+}
+
+func TestBootstrapListsTrashedSnapshots(t *testing.T) {
+	app := newTestApp(t)
+	snapshot, sha := seedLocalSnapshot(t, app)
+	identity, err := pathguard.Identity(app.paths.BackupDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.MoveToTrash(MoveToTrashRequest{
+		SnapshotID:           snapshot.ID,
+		ExpectedRootIdentity: identity,
+		ExpectedBackupDir:    app.paths.BackupDir(),
+		ExpectedSHA256:       sha,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := app.GetBootstrap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.Trash.Count != 1 || bootstrap.Trash.Items[0].SnapshotID != snapshot.ID {
+		t.Fatalf("bootstrap should expose the trashed snapshot: %+v", bootstrap.Trash)
+	}
+	if len(bootstrap.LocalSnapshots) != 0 {
+		t.Fatalf("trashed snapshot must not appear in the archive list: %+v", bootstrap.LocalSnapshots)
+	}
+	if err := app.RestoreFromTrash(snapshot.ID); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err = app.GetBootstrap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.Trash.Count != 0 || len(bootstrap.LocalSnapshots) != 1 {
+		t.Fatalf("restore should put it back: %+v %+v", bootstrap.Trash, bootstrap.LocalSnapshots)
+	}
+}
