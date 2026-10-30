@@ -23,6 +23,14 @@ const (
 	ScheduleWeekly ScheduleKind = "weekly"
 )
 
+type CloseBehavior string
+
+const (
+	CloseAsk  CloseBehavior = "ask"
+	CloseExit CloseBehavior = "exit"
+	CloseTray CloseBehavior = "tray"
+)
+
 type Theme string
 
 const (
@@ -50,19 +58,20 @@ type Retention struct {
 }
 
 type Config struct {
-	SchemaVersion      int         `json:"schemaVersion"`
-	Theme              Theme       `json:"theme"`
-	UpdateCheck        bool        `json:"updateCheck"`
-	OnboardingComplete bool        `json:"onboardingComplete"`
-	BackupDir          string      `json:"backupDir"`
-	IncludeDesktop     bool        `json:"includeDesktop"`
-	EncryptionLocal    bool        `json:"encryptionLocal"`
-	Compression        Compression `json:"compression"`
-	Schedule           Schedule    `json:"schedule"`
-	Retention          Retention   `json:"retention"`
-	PreRestoreSnapshot bool        `json:"preRestoreSnapshot"`
-	VerifyAfterBackup  bool        `json:"verifyAfterBackup"`
-	LastScheduledAt    string      `json:"lastScheduledAt"`
+	SchemaVersion      int           `json:"schemaVersion"`
+	Theme              Theme         `json:"theme"`
+	UpdateCheck        bool          `json:"updateCheck"`
+	OnboardingComplete bool          `json:"onboardingComplete"`
+	BackupDir          string        `json:"backupDir"`
+	IncludeDesktop     bool          `json:"includeDesktop"`
+	EncryptionLocal    bool          `json:"encryptionLocal"`
+	Compression        Compression   `json:"compression"`
+	Schedule           Schedule      `json:"schedule"`
+	Retention          Retention     `json:"retention"`
+	PreRestoreSnapshot bool          `json:"preRestoreSnapshot"`
+	VerifyAfterBackup  bool          `json:"verifyAfterBackup"`
+	CloseBehavior      CloseBehavior `json:"closeBehavior"`
+	LastScheduledAt    string        `json:"lastScheduledAt"`
 }
 
 var timePattern = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
@@ -93,6 +102,7 @@ func Default(defaultBackupDir string) Config {
 		},
 		PreRestoreSnapshot: true,
 		VerifyAfterBackup:  true,
+		CloseBehavior:      CloseAsk,
 	}
 }
 
@@ -153,6 +163,11 @@ func (c *Config) Normalize(defaultBackupDir string) {
 	}
 	if c.Compression.ExtraArgs == nil {
 		c.Compression.ExtraArgs = []string{}
+	}
+	switch c.CloseBehavior {
+	case CloseAsk, CloseExit, CloseTray:
+	default:
+		c.CloseBehavior = CloseAsk
 	}
 	if c.Schedule.Kind == "" {
 		c.Schedule.Kind = ScheduleManual
@@ -235,6 +250,11 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Retention.TrashDays < 1 || cfg.Retention.TrashDays > 365 {
 		return errors.New("回收站保留天数必须在 1 到 365 之间")
+	}
+	switch cfg.CloseBehavior {
+	case CloseAsk, CloseExit, CloseTray:
+	default:
+		return fmt.Errorf("未知关闭行为：%s", cfg.CloseBehavior)
 	}
 	switch cfg.Schedule.Kind {
 	case ScheduleManual, ScheduleDaily, ScheduleWeekly:

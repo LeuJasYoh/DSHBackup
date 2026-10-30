@@ -36,7 +36,8 @@ export const store = reactive({
   toast: { ...emptyToast },
   toastTimer: null as ReturnType<typeof setTimeout> | null,
   notice: null as { level: "warning" | "error"; message: string; time: string } | null,
-  modals: { restore: false, help: false, confirm: null as ConfirmState | null },
+  modals: { restore: false, help: false, closePrompt: false, confirm: null as ConfirmState | null },
+  closePromptTaskRunning: false,
   saving: false,
   trashBusy: false,
   refreshing: false,
@@ -147,6 +148,10 @@ export async function init() {
       }
       scheduleRefresh();
     }),
+    api.onCloseRequest((payload) => {
+      store.closePromptTaskRunning = !!payload?.taskRunning;
+      store.modals.closePrompt = true;
+    }),
     api.onNotice((notice) => {
       if (notice.level !== "info") store.notice = { ...notice, level: notice.level };
       else { showToast(notice.message); scheduleRefresh(600); }
@@ -164,6 +169,7 @@ export async function init() {
     ];
     if (route === "history") go("history");
     else if (route === "trash") go("trash");
+    else if (route === "close") { store.closePromptTaskRunning = true; store.modals.closePrompt = true; }
     else if (route === "settings" || sections.includes(route as SettingsSection)) {
       const section = params.get("section") ?? route;
       openSettings(sections.includes(section as SettingsSection) ? section as SettingsSection : "backup-dir");
@@ -420,6 +426,18 @@ export function askEmptyTrash() {
 }
 
 export function openTrashFolder() { return openFolder(api.openTrashFolder); }
+
+export async function closeDecision(action: "exit" | "tray" | "cancel", remember: boolean) {
+  try {
+    await api.closeDecision(action, remember);
+    store.modals.closePrompt = false;
+    if (action === "tray") showToast("已隐藏到系统托盘，可从托盘图标重新打开", "info");
+  } catch (error) {
+    showToast(errorMessage(error), "error");
+  }
+}
+
+export function dismissClosePrompt() { store.modals.closePrompt = false; }
 async function openFolder(action: () => Promise<void>) {
   try { await action(); } catch (error) { showToast(errorMessage(error), "error"); }
 }

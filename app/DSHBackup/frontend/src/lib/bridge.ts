@@ -1,4 +1,4 @@
-import type { Bootstrap, Config, MoveToTrashRequest, Notice, OnboardingInput, RestoreRequest, TaskProgress, TaskResult, TrashEmptyResult, TrashList, UpdateInfo, VerifyRequest } from "./types";
+import type { Bootstrap, ClosePromptPayload, Config, MoveToTrashRequest, Notice, OnboardingInput, RestoreRequest, TaskProgress, TaskResult, TrashEmptyResult, TrashList, UpdateInfo, VerifyRequest } from "./types";
 
 declare global {
   interface Window {
@@ -61,6 +61,7 @@ export const api = {
   deleteTrashItem: (snapshotId: string) => invoke<void>("DeleteTrashItem", snapshotId),
   emptyTrash: () => invoke<TrashEmptyResult>("EmptyTrash"),
   openTrashFolder: () => invoke<void>("OpenTrashFolder"),
+  closeDecision: (action: string, remember: boolean) => invoke<void>("CloseDecision", action, remember),
   checkDSH: () => invoke<Bootstrap["dsh"]>("CheckDSH"),
   openBackupFolder: () => invoke<void>("OpenBackupFolder"),
   openKeysFolder: () => invoke<void>("OpenKeysFolder"),
@@ -77,6 +78,7 @@ export const api = {
   onTaskResult: (callback: (payload: TaskResult) => void) => subscribe("task:result", callback),
   onStateChanged: (callback: (payload: { reason?: string }) => void) => subscribe("state:changed", callback),
   onNotice: (callback: (payload: Notice) => void) => subscribe("app:notice", callback),
+  onCloseRequest: (callback: (payload: ClosePromptPayload) => void) => subscribe("app:close-request", callback),
 };
 
 export async function copyToClipboard(text: string): Promise<boolean> {

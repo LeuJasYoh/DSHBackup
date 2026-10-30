@@ -36,6 +36,9 @@ const dictionaryOptions = [{ value: 0, label: "自动" }, ...[16, 32, 64, 128, 2
 const scheduleOptions = [
   { id: "manual", label: "手动" }, { id: "daily", label: "每天" }, { id: "weekly", label: "每周" },
 ] as const;
+const closeOptions = [
+  { id: "ask", label: "每次询问" }, { id: "exit", label: "直接退出" }, { id: "tray", label: "最小化到托盘" },
+] as const;
 
 const boot = computed(() => store.boot!);
 const draft = ref<Config | null>(null);
@@ -576,6 +579,17 @@ function setRetention(delta: number) {
           <section id="sec-runtime" class="set-sec">
             <h2>运行环境</h2>
             <p class="set-lede">{{ boot.app.version }} · Windows x64 · 7-Zip 26.05 · 本地优先</p>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <div class="setting-desc">点标题栏关闭按钮时的行为。最小化到托盘后应用仍在后台运行，计划备份照常触发；可在托盘菜单里退出。</div>
+                <div v-if="!boot.app.trayAvailable" class="hint">当前系统托盘不可用。</div>
+              </div>
+              <div class="setting-control">
+                <div class="segmented" role="group" aria-label="关闭行为">
+                  <button v-for="option in closeOptions" :key="option.id" type="button" :class="{ active: draft.closeBehavior === option.id }" :aria-pressed="draft.closeBehavior === option.id" :disabled="option.id === 'tray' && !boot.app.trayAvailable" @click="draft.closeBehavior = option.id">{{ option.label }}</button>
+                </div>
+              </div>
+            </div>
             <div class="rows about-rows">
               <div class="rowline">
                 <div class="row-main"><div class="row-title">构建时间</div></div>

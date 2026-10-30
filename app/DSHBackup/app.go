@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -24,10 +25,11 @@ import (
 	"DSHBackup/internal/pathguard"
 	"DSHBackup/internal/platform"
 	"DSHBackup/internal/sidecar"
+	"DSHBackup/internal/tray"
 )
 
 var (
-	Version   = "1.2.3"
+	Version   = "1.3.0"
 	BuildTime = "dev"
 )
 
@@ -84,6 +86,10 @@ type App struct {
 	updateMu     sync.Mutex
 	lastUpdate   UpdateInfo
 	lastUpdateAt time.Time
+
+	tray     *tray.Tray
+	trayIcon []byte
+	quitting atomic.Bool
 }
 
 func NewApp(paths apppath.Paths) *App {
@@ -206,6 +212,7 @@ func (a *App) startup(ctx context.Context) {
 			"sevenZip": a.sevenZipVersion,
 		})
 	}
+	a.startTray()
 	a.scheduleBase = time.Now()
 	a.markReady()
 	go a.purgeTrashOnStartup()
@@ -238,6 +245,9 @@ func (a *App) shutdown(_ context.Context) {
 	}
 	if a.sidecar != nil {
 		_ = a.sidecar.Close()
+	}
+	if a.tray != nil {
+		a.tray.Close()
 	}
 	if a.logger != nil {
 		a.logger.Info("app.stop", "应用退出", nil)
@@ -396,12 +406,13 @@ func (a *App) GetBootstrap() (Bootstrap, error) {
 
 func (a *App) appInfo(writable bool) AppInfo {
 	return AppInfo{
-		Version:   Version,
-		BuildTime: BuildTime,
-		Platform:  apppath.PlatformName(),
-		Writable:  writable,
-		Portable:  true,
-		Warnings:  append([]string{}, a.initWarnings...),
+		Version:       Version,
+		BuildTime:     BuildTime,
+		Platform:      apppath.PlatformName(),
+		Writable:      writable,
+		Portable:      true,
+		TrayAvailable: a.tray != nil,
+		Warnings:      append([]string{}, a.initWarnings...),
 		SevenZip: ToolInfo{
 			Path:    a.sevenZipPath,
 			Version: a.sevenZipVersion,
@@ -588,6 +599,9 @@ func (a *App) emitTaskResult(result TaskResult) {
 		runtime.EventsEmit(a.ctx, "task:result", result)
 	}
 	a.invalidateSourceCache()
+	if a.tray != nil && result.Success {
+		a.tray.SetTip("DSH Backup · 上次任务 " + time.Now().Format("15:04"))
+	}
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "state:changed", map[string]any{"reason": result.Kind})
 	}

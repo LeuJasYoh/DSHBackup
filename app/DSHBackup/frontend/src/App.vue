@@ -7,6 +7,7 @@ import OnboardingWizard from "./components/OnboardingWizard.vue";
 import RestoreModal from "./components/RestoreModal.vue";
 import ConfirmModal from "./components/ConfirmModal.vue";
 import HelpModal from "./components/HelpModal.vue";
+import ClosePrompt from "./components/ClosePrompt.vue";
 import DashboardView from "./views/DashboardView.vue";
 import HistoryView from "./views/HistoryView.vue";
 import TrashView from "./views/TrashView.vue";
@@ -194,5 +195,6 @@ onUnmounted(dispose);
   <RestoreModal v-if="store.modals.restore" />
   <ConfirmModal v-if="store.modals.confirm" />
   <HelpModal v-if="store.modals.help" />
+  <ClosePrompt v-if="store.modals.closePrompt" />
   <ToastHost />
 </template>

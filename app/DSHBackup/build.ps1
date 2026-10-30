@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$Version = "1.2.3",
+    [string]$Version = "1.3.0",
     [switch]$SkipFrontendInstall,
     [switch]$SkipZip
 )
@@ -57,6 +57,13 @@ if (-not $SkipFrontendInstall -and -not (Test-Path (Join-Path $appRoot "frontend
         if ($LASTEXITCODE -ne 0) { throw "npm install 失败" }
     } finally { Pop-Location }
 }
+
+Write-Step "运行前端测试"
+Push-Location (Join-Path $appRoot "frontend")
+try {
+    npm run test
+    if ($LASTEXITCODE -ne 0) { throw "前端测试失败" }
+} finally { Pop-Location }
 
 Write-Step "构建 Rust sidecar (release, static CRT)"
 Push-Location (Join-Path $appRoot "sidecar")

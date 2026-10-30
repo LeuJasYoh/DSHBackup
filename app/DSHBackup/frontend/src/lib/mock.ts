@@ -21,7 +21,7 @@ const baseConfig: Config = {
   includeDesktop: true, encryptionLocal: false,
   compression: { level: "store", dictionaryMb: 0, threads: 0, extraArgs: [] },
   schedule: { kind: "manual", time: "03:00", weekday: 1 }, retention: { local: 7, trashDays: 7 },
-  preRestoreSnapshot: true, verifyAfterBackup: true, lastScheduledAt: "",
+  preRestoreSnapshot: true, verifyAfterBackup: true, closeBehavior: "ask", lastScheduledAt: "",
 };
 function makeSnapshot(id: string, date: Date, config: Config): Snapshot {
   return {
@@ -35,7 +35,7 @@ function makeSnapshot(id: string, date: Date, config: Config): Snapshot {
 const bootstrap: Bootstrap = {
   config: baseConfig,
   app: {
-    version: "1.2.3", buildTime: "2026-10-26T19:00:00+08:00", platform: "windows/amd64", writable: true, portable: true, warnings: [],
+    version: "1.2.3", buildTime: "2026-10-26T19:00:00+08:00", platform: "windows/amd64", writable: true, portable: true, trayAvailable: true, warnings: [],
     sevenZip: { path: "tools\\7za.exe", version: "7-Zip (a) 26.05 (x64)", ok: true },
     sidecar: { path: "dsh-backup-core.exe", version: "1.2.3", ok: true },
   },
@@ -270,6 +270,7 @@ export const mockApi = {
     }
     return { currentVersion, latestVersion: currentVersion, available: false, checkedAt: new Date().toISOString(), url: "https://github.com/LeuJasYoh/DSHBackup/releases" };
   },
+  async CloseDecision(action: string, remember: boolean): Promise<void> { await delay(); if (remember && (action === "exit" || action === "tray")) bootstrap.config = { ...bootstrap.config, closeBehavior: action }; mockEvents.emit("state:changed", { reason: "settings" }); },
   async OpenRepository(): Promise<void> { await delay(); },
   async OpenReleasePage(_url: string): Promise<void> { await delay(); },
 };

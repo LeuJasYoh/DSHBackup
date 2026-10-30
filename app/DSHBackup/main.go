@@ -18,6 +18,9 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed build/windows/icon.ico
+var trayIconData []byte
+
 // windowBackground 与 style.css 的 --bg 保持一致，避免首帧出现错色。
 func windowBackground() *options.RGBA {
 	if platform.UsesLightTheme() {
@@ -46,6 +49,7 @@ func main() {
 		}
 	}
 	app := NewApp(paths)
+	app.trayIcon = trayIconData
 	err = wails.Run(&options.App{
 		Title:            "DSH Backup",
 		Width:            1280,
@@ -59,15 +63,16 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		OnStartup:  app.startup,
-		OnShutdown: app.shutdown,
+		OnStartup:     app.startup,
+		OnShutdown:    app.shutdown,
+		OnBeforeClose: app.beforeClose,
 		Bind: []interface{}{
 			app,
 		},
 		SingleInstanceLock: &options.SingleInstanceLock{
 			UniqueId: "DSHBackup-9f0b4d40-6a0a-4f6d-9c6b-2b5f31a8e7c1",
 			OnSecondInstanceLaunch: func(_ options.SecondInstanceData) {
-				app.emitNotice("warning", "DSH Backup 已经在运行")
+				app.showWindow()
 			},
 		},
 		EnableDefaultContextMenu: true,

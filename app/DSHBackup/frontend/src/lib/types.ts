@@ -1,6 +1,7 @@
 export type CompressionLevel = "store" | "fast" | "quick" | "balanced" | "high" | "max";
 export type ScheduleKind = "manual" | "daily" | "weekly";
 export type Theme = "system" | "light" | "dark";
+export type CloseBehavior = "ask" | "exit" | "tray";
 export type Page = "dashboard" | "history" | "trash" | "settings";
 export type SettingsSection =
   | "backup-dir" | "desktop" | "verify" | "prerestore"
@@ -35,6 +36,7 @@ export interface Config {
   retention: RetentionConfig;
   preRestoreSnapshot: boolean;
   verifyAfterBackup: boolean;
+  closeBehavior: CloseBehavior;
   lastScheduledAt: string;
 }
 export interface ToolInfo {
@@ -50,6 +52,7 @@ export interface AppInfo {
   platform: string;
   writable: boolean;
   portable: boolean;
+  trayAvailable: boolean;
   warnings: string[];
   sevenZip: ToolInfo;
   sidecar: ToolInfo;
@@ -213,6 +216,7 @@ export interface TaskResult {
   preRestoreSnapshot?: Snapshot;
   restore?: RestoreOutcome;
 }
+export interface ClosePromptPayload { taskRunning: boolean }
 export interface Notice {
   level: "info" | "warning" | "error";
   message: string;

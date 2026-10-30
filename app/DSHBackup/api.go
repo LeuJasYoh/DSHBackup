@@ -26,14 +26,15 @@ type PathsInfo struct {
 }
 
 type AppInfo struct {
-	Version   string   `json:"version"`
-	BuildTime string   `json:"buildTime"`
-	Platform  string   `json:"platform"`
-	Writable  bool     `json:"writable"`
-	Portable  bool     `json:"portable"`
-	Warnings  []string `json:"warnings"`
-	SevenZip  ToolInfo `json:"sevenZip"`
-	Sidecar   ToolInfo `json:"sidecar"`
+	Version       string   `json:"version"`
+	BuildTime     string   `json:"buildTime"`
+	Platform      string   `json:"platform"`
+	Writable      bool     `json:"writable"`
+	Portable      bool     `json:"portable"`
+	TrayAvailable bool     `json:"trayAvailable"`
+	Warnings      []string `json:"warnings"`
+	SevenZip      ToolInfo `json:"sevenZip"`
+	Sidecar       ToolInfo `json:"sidecar"`
 }
 
 type SourceInfo struct {

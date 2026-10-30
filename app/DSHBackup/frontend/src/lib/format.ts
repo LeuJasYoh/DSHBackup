@@ -174,6 +174,7 @@ export function extraArgsError(text: string): string {
 export function validateConfig(config: Config, extraArgsText: string): string {
   if (!isAbsoluteDirectory(config.backupDir)) return "备份目录必须是有效的 Windows 绝对路径";
   if (!["system", "dark", "light"].includes(config.theme)) return "请选择有效的界面主题";
+  if (!["ask", "exit", "tray"].includes(config.closeBehavior)) return "请选择有效的关闭行为";
   if (!compressionLevels.includes(config.compression.level)) return "请选择有效的压缩档位";
   if (!Number.isInteger(config.retention.local) || config.retention.local < 1 || config.retention.local > 99) return "保留份数必须是 1 到 99 的整数";
   if (!Number.isInteger(config.retention.trashDays) || config.retention.trashDays < 1 || config.retention.trashDays > 365) return "回收站保留天数必须在 1 到 365 之间";
