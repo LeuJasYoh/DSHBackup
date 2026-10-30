@@ -335,7 +335,30 @@ h1, h2, h3, h4, p { text-wrap: pretty; }
 .text-input:focus { border-color: var(--border-strong); background: var(--surface); }
 .text-input.mono { font-size: 12px; }
 .text-input.compact { width: 64px; text-align: center; }
-.select-input { appearance: auto; cursor: pointer; }
+.option-select { position: relative; width: 100%; min-width: 0; }
+.option-trigger { display: flex; align-items: center; gap: 8px; justify-content: space-between; cursor: pointer; text-align: left; }
+.option-trigger:disabled { cursor: default; opacity: .65; }
+.option-trigger-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.option-trigger-label.is-placeholder { color: var(--faint); }
+.option-chevron { width: 12px; height: 12px; flex: none; color: var(--faint); transform: rotate(90deg); transition: transform .16s var(--ease), color .16s var(--ease); }
+.option-chevron.is-open { transform: rotate(-90deg); color: var(--muted); }
+.option-panel {
+  position: fixed; z-index: 140; padding: 4px; overflow: auto;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-deep); box-shadow: var(--shadow-pop);
+}
+.option-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 9px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--text-soft); font-size: 12.5px; text-align: left; cursor: pointer;
+  transition: background-color .12s var(--ease), color .12s var(--ease);
+}
+.option-item.is-active { background: var(--muted-surface); color: var(--text); }
+.option-item.is-selected { color: var(--text); }
+.option-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.option-item-hint { color: var(--faint); font-size: 11px; flex: none; }
+.option-check { width: 13px; height: 13px; flex: none; color: var(--accent-text); }
+.option-empty { padding: 10px; color: var(--faint); font-size: 12px; text-align: center; }
 .path-input { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .path-input .text-input { flex: 1; }
 .inline-field { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; min-height: 32px; color: var(--text-soft); }
@@ -754,6 +777,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .advanced-wide { grid-column: 1 / -1; }
 .schedule-fields { margin-top: 8px; }
 .weekday-select { width: 96px; }
+.weekday-select .option-trigger { padding: 0 8px; }
 .time-input { width: 88px; text-align: center; font-variant-numeric: tabular-nums; }
 .form-fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
 .form-fieldset:disabled { opacity: 0.7; }

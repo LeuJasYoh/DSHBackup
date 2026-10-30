@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import OptionSelect from "../components/OptionSelect.vue";
 import { api } from "../lib/bridge";
 import { cloneConfig, compressionHint, compressionLevels, compressionShort, configFingerprint, errorMessage, extraArgsError, formatBytes, formatDate, parseExtraArgs, scheduleLabel, validateConfig, weekdayLabel } from "../lib/format";
 import { applyTheme } from "../lib/theme";
@@ -30,6 +31,8 @@ const railItems: RailItem[] = [
 const themeOptions: Array<{ id: Theme; label: string }> = [
   { id: "system", label: "跟随系统" }, { id: "light", label: "亮色" }, { id: "dark", label: "暗色" },
 ];
+const weekdayOptions = Array.from({ length: 7 }, (_, day) => ({ value: day, label: weekdayLabel(day) }));
+const dictionaryOptions = [{ value: 0, label: "自动" }, ...[16, 32, 64, 128, 256, 512, 1024].map((size) => ({ value: size, label: `${size} MB` }))];
 const scheduleOptions = [
   { id: "manual", label: "手动" }, { id: "daily", label: "每天" }, { id: "weekly", label: "每周" },
 ] as const;
@@ -401,7 +404,7 @@ function setRetention(delta: number) {
               </div>
               <div class="setting-control">
                 <input v-model="draft.schedule.time" class="text-input time-input" type="time" aria-label="计划备份时间" />
-                <select v-if="draft.schedule.kind === 'weekly'" v-model.number="draft.schedule.weekday" class="text-input weekday-select" aria-label="星期"><option v-for="day in 7" :key="day" :value="day - 1">{{ weekdayLabel(day - 1) }}</option></select>
+                <OptionSelect v-if="draft.schedule.kind === 'weekly'" class="weekday-select" :model-value="draft.schedule.weekday" :options="weekdayOptions" aria-label="星期" @update:model-value="draft.schedule.weekday = Number($event)" />
               </div>
             </div>
           </section>
@@ -460,7 +463,7 @@ function setRetention(delta: number) {
               <div>
                 <div class="advanced-grid">
                   <label>字典大小
-                    <select v-model.number="draft.compression.dictionaryMb" class="text-input select-input"><option :value="0">自动</option><option v-for="size in [16, 32, 64, 128, 256, 512, 1024]" :key="size" :value="size">{{ size }} MB</option></select>
+                    <OptionSelect :model-value="draft.compression.dictionaryMb" :options="dictionaryOptions" aria-label="字典大小" @update:model-value="draft.compression.dictionaryMb = Number($event)" />
                   </label>
                   <label>线程数（0 为自动）<input v-model.number="draft.compression.threads" type="number" min="0" max="64" class="text-input" /></label>
                   <label class="advanced-wide">自定义参数<input v-model="extraArgsText" class="text-input mono" placeholder="例如 -mfb=273 -ms=on" :aria-invalid="!!argsError" aria-describedby="argsHint" /></label>

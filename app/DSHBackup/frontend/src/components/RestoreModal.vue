@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import OptionSelect from "./OptionSelect.vue";
 import { useModalFocus } from "../lib/modalFocus";
 import { askConfirm, isBusy, pickDirectory, snapshots, startRestore, store } from "../store";
 import { errorMessage, formatBytes, formatDate, isAbsoluteDirectory, restoreBlockReason, scopeLabel, statusLabel } from "../lib/format";
@@ -18,6 +19,10 @@ const locked = computed(() => submitting.value || browsing.value);
 const busy = computed(() => isBusy.value);
 function close() { if (!locked.value) store.modals.restore = false; }
 useModalFocus(card, close);
+const snapshotOptions = computed(() => snapshots.value.map((snapshot) => ({
+  value: snapshot.id,
+  label: `${formatDate(snapshot.createdAt)} · ${formatBytes(snapshot.size)} · ${statusLabel(snapshot.status)}`,
+})));
 const selected = computed(() => snapshots.value.find((snapshot) => snapshot.id === selectedId.value));
 const defaultTarget = computed(() => store.boot?.dsh.sources.find((source) => source.name === "dsh")?.path ?? "");
 const target = computed(() => targetMode.value === "custom" ? customTarget.value.trim() : defaultTarget.value);
@@ -90,7 +95,7 @@ async function submit() {
         <fieldset class="form-fieldset" :disabled="locked || busy">
           <div class="field-block" style="margin-top: 0">
             <label class="field-label" for="restoreSnapshot">来源归档</label>
-            <select id="restoreSnapshot" v-model="selectedId" autofocus class="text-input select-input"><option v-for="snapshot in snapshots" :key="snapshot.id" :value="snapshot.id">{{ formatDate(snapshot.createdAt) }} · {{ formatBytes(snapshot.size) }} · {{ statusLabel(snapshot.status) }}</option></select>
+            <OptionSelect input-id="restoreSnapshot" :model-value="selectedId" :options="snapshotOptions" autofocus aria-label="来源归档" @update:model-value="selectedId = String($event)" />
             <p v-if="selected" class="hint">{{ selected.encrypted ? "已加密，需使用对应本地私钥。" : "未加密归档。" }}</p>
           </div>
 
