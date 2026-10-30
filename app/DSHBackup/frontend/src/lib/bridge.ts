@@ -1,4 +1,4 @@
-import type { Bootstrap, Config, DeleteSnapshotRequest, Notice, OnboardingInput, RestoreRequest, TaskProgress, TaskResult, UpdateInfo, VerifyRequest } from "./types";
+import type { Bootstrap, Config, MoveToTrashRequest, Notice, OnboardingInput, RestoreRequest, TaskProgress, TaskResult, TrashEmptyResult, TrashList, UpdateInfo, VerifyRequest } from "./types";
 
 declare global {
   interface Window {
@@ -55,7 +55,12 @@ export const api = {
   cancelTask: (taskId: string) => invoke<void>("CancelTask", taskId),
   startRestore: (request: RestoreRequest) => invoke<string>("StartRestore", request),
   startVerify: (request: VerifyRequest) => invoke<string>("StartVerify", request),
-  deleteLocalSnapshot: (request: DeleteSnapshotRequest) => invoke<void>("DeleteLocalSnapshot", request),
+  moveToTrash: (request: MoveToTrashRequest) => invoke<void>("MoveToTrash", request),
+  listTrash: () => invoke<TrashList>("ListTrash"),
+  restoreFromTrash: (snapshotId: string) => invoke<void>("RestoreFromTrash", snapshotId),
+  deleteTrashItem: (snapshotId: string) => invoke<void>("DeleteTrashItem", snapshotId),
+  emptyTrash: () => invoke<TrashEmptyResult>("EmptyTrash"),
+  openTrashFolder: () => invoke<void>("OpenTrashFolder"),
   checkDSH: () => invoke<Bootstrap["dsh"]>("CheckDSH"),
   openBackupFolder: () => invoke<void>("OpenBackupFolder"),
   openKeysFolder: () => invoke<void>("OpenKeysFolder"),

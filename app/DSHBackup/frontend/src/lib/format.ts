@@ -176,6 +176,7 @@ export function validateConfig(config: Config, extraArgsText: string): string {
   if (!["system", "dark", "light"].includes(config.theme)) return "请选择有效的界面主题";
   if (!compressionLevels.includes(config.compression.level)) return "请选择有效的压缩档位";
   if (!Number.isInteger(config.retention.local) || config.retention.local < 1 || config.retention.local > 99) return "保留份数必须是 1 到 99 的整数";
+  if (!Number.isInteger(config.retention.trashDays) || config.retention.trashDays < 1 || config.retention.trashDays > 365) return "回收站保留天数必须在 1 到 365 之间";
   if (config.schedule.kind !== "manual" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(config.schedule.time)) return "计划时间格式必须为 HH:MM";
   if (!Number.isInteger(config.schedule.weekday) || config.schedule.weekday < 0 || config.schedule.weekday > 6) return "请选择有效的星期";
   if (![0, 16, 32, 64, 128, 256, 512, 1024].includes(config.compression.dictionaryMb)) return "请选择有效的字典大小";

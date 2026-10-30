@@ -1,5 +1,5 @@
 import { cloneConfig, errorMessage, isAbsoluteDirectory, restoreBlockReason, validateConfig } from "./format";
-import type { Bootstrap, Config, DeleteSnapshotRequest, Notice, OnboardingInput, RestoreRequest, Snapshot, TaskKind, TaskProgress, TaskResult, UpdateInfo, VerifyRequest } from "./types";
+import type { Bootstrap, Config, MoveToTrashRequest, Notice, OnboardingInput, RestoreRequest, Snapshot, TaskKind, TaskProgress, TaskResult, TrashEmptyResult, TrashItem, UpdateInfo, VerifyRequest } from "./types";
 
 type Listener = (payload: unknown) => void;
 const listeners = new Map<string, Set<Listener>>();
@@ -20,7 +20,7 @@ const baseConfig: Config = {
   schemaVersion: 1, theme: "system", updateCheck: true, onboardingComplete: params.get("onboarding") !== "1", backupDir: `${root}\\backups`,
   includeDesktop: true, encryptionLocal: false,
   compression: { level: "store", dictionaryMb: 0, threads: 0, extraArgs: [] },
-  schedule: { kind: "manual", time: "03:00", weekday: 1 }, retention: { local: 7 },
+  schedule: { kind: "manual", time: "03:00", weekday: 1 }, retention: { local: 7, trashDays: 7 },
   preRestoreSnapshot: true, verifyAfterBackup: true, lastScheduledAt: "",
 };
 function makeSnapshot(id: string, date: Date, config: Config): Snapshot {
@@ -52,9 +52,35 @@ const bootstrap: Bootstrap = {
   disk: { path: baseConfig.backupDir, free: 186 * 1024 ** 3, total: 512 * 1024 ** 3 },
   schedule: { kind: "manual", time: "03:00", weekday: 1, nextRun: "", lastRun: "" }, warnings: [], logsPath: `${root}\\data\\logs`,
   backupRootIdentity: "mock-volume:mock-directory",
+  trash: { items: [], count: 0, bytes: 0, root: `${root}\\backups\\.dshbackup-trash`, warnings: [] },
 };
 // Dev tests may replace mockApi methods or mutate this state. No file/credential operations occur here.
 export const mockState = { bootstrap, currentTask: null as TaskProgress | null, starting: false };
+const mockTrash: TrashItem[] = [];
+function trashRoot() { return `${bootstrap.config.backupDir}\\.dshbackup-trash`; }
+function syncTrash() {
+  bootstrap.trash = { items: [...mockTrash], count: mockTrash.length, bytes: mockTrash.reduce((sum, item) => sum + item.size, 0), root: trashRoot() };
+}
+function pushTrash(snapshot: Snapshot, reason: string, config: Config) {
+  const days = config.retention.trashDays || 7;
+  const now = Date.now();
+  mockTrash.unshift({
+    snapshotId: snapshot.id,
+    archiveName: snapshot.localPath?.split(/[\\/]/).pop() || `dsh-backup-${snapshot.id}.7z`,
+    size: snapshot.size,
+    movedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + days * 86_400_000).toISOString(),
+    daysLeft: days,
+    reason,
+    encrypted: snapshot.encrypted,
+    kind: snapshot.kind,
+    captureStatus: snapshot.captureStatus,
+    archiveMissing: false,
+    belongsToCurrentRoot: true,
+    restorable: true,
+  });
+  syncTrash();
+}
 let timer: ReturnType<typeof setInterval> | null = null;
 function refreshDerived() {
   bootstrap.latest = [...bootstrap.localSnapshots].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
@@ -141,7 +167,16 @@ export const mockApi = {
           const snapshot = makeSnapshot(String(Date.now()), new Date(), config);
           bootstrap.localSnapshots.unshift(snapshot);
           let count = 0;
-          bootstrap.localSnapshots = bootstrap.localSnapshots.filter((item) => item.kind === "pre-restore" || ++count <= config.retention.local);
+          const kept: Snapshot[] = [];
+          const surplus: Snapshot[] = [];
+          for (const item of bootstrap.localSnapshots) {
+            if (item.kind === "pre-restore") { kept.push(item); continue; }
+            count += 1;
+            if (count <= config.retention.local) kept.push(item);
+            else surplus.push(item);
+          }
+          bootstrap.localSnapshots = kept;
+          for (const item of surplus) pushTrash(item, "retention", config);
           return { success: true, message: "备份完成（开发模拟）", snapshot };
         },
       };
@@ -179,12 +214,42 @@ export const mockApi = {
     mockState.currentTask = null;
     if (task) mockEvents.emit("task:result", { taskId: task.taskId, kind: task.kind, success: false, message: "任务已取消", error: "任务已取消" });
   },
-  async DeleteLocalSnapshot(request: DeleteSnapshotRequest): Promise<void> {
-    ensureIdle(); await delay();
+  async MoveToTrash(request: MoveToTrashRequest): Promise<void> {
+    await delay(20);
     if (request.expectedRootIdentity !== bootstrap.backupRootIdentity) throw new Error("备份目录在选择后已改变，已拒绝删除；请刷新归档列表后重试");
+    const snapshot = bootstrap.localSnapshots.find((item) => item.id === request.snapshotId);
+    if (!snapshot) throw new Error("找不到本地快照；请刷新归档列表");
     bootstrap.localSnapshots = bootstrap.localSnapshots.filter((item) => item.id !== request.snapshotId);
+    pushTrash(snapshot, "manual", bootstrap.config);
     refreshDerived(); mockEvents.emit("state:changed", { reason: "snapshot-delete" });
   },
+  async ListTrash(): Promise<Bootstrap["trash"]> { await delay(20); syncTrash(); return clone(bootstrap.trash); },
+  async RestoreFromTrash(snapshotId: string): Promise<void> {
+    await delay();
+    const index = mockTrash.findIndex((item) => item.snapshotId === snapshotId);
+    if (index < 0) throw new Error("回收站中找不到这项备份");
+    const item = mockTrash[index];
+    if (!item.restorable) throw new Error(item.blockedReason || "这项备份无法恢复");
+    const snapshot = makeSnapshot(item.snapshotId, new Date(), bootstrap.config);
+    bootstrap.localSnapshots.unshift(snapshot);
+    mockTrash.splice(index, 1);
+    syncTrash(); refreshDerived(); mockEvents.emit("state:changed", { reason: "trash-restore" });
+  },
+  async DeleteTrashItem(snapshotId: string): Promise<void> {
+    await delay();
+    const index = mockTrash.findIndex((item) => item.snapshotId === snapshotId);
+    if (index < 0) throw new Error("回收站中找不到这项备份");
+    mockTrash.splice(index, 1);
+    syncTrash(); mockEvents.emit("state:changed", { reason: "trash-delete" });
+  },
+  async EmptyTrash(): Promise<TrashEmptyResult> {
+    await delay();
+    const removed = mockTrash.length;
+    mockTrash.splice(0, mockTrash.length);
+    syncTrash(); mockEvents.emit("state:changed", { reason: "trash-empty" });
+    return { removed, failed: [] };
+  },
+  async OpenTrashFolder(): Promise<void> { await delay(); },
   async CheckDSH() { await delay(); return clone(bootstrap.dsh); },
   async OpenBackupFolder(): Promise<void> { await delay(); },
   async OpenKeysFolder(): Promise<void> { await delay(); },

@@ -49,7 +49,7 @@ const statusText = (snapshot: Snapshot) => snapshot.captureStatus === "partial" 
               <button v-if="!props.compact" class="table-action" type="button" :disabled="isBusy || !snapshot.localPath || snapshot.status === 'missing'" title="在资源管理器中打开" aria-label="打开归档位置" @click="emit('open', snapshot)">
                 <svg class="icon"><use href="#i-folder"></use></svg>
               </button>
-              <button v-if="!props.compact" class="table-action danger-link" type="button" :disabled="isBusy || !!store.pendingSnapshotId" :title="store.pendingSnapshotId ? '请先处理当前的撤销窗口' : '删除这份备份'" aria-label="删除本地归档" @click="emit('deleteLocal', snapshot)">
+              <button v-if="!props.compact" class="table-action danger-link" type="button" :disabled="isBusy" title="移入回收站，可在保留期内找回" aria-label="删除本地归档" @click="emit('deleteLocal', snapshot)">
                 <svg class="icon"><use href="#i-trash"></use></svg>
               </button>
             </div>

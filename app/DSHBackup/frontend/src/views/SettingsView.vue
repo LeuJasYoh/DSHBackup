@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { api } from "../lib/bridge";
-import { cloneConfig, compressionHint, compressionLevels, compressionShort, configFingerprint, errorMessage, extraArgsError, formatDate, parseExtraArgs, scheduleLabel, validateConfig, weekdayLabel } from "../lib/format";
+import { cloneConfig, compressionHint, compressionLevels, compressionShort, configFingerprint, errorMessage, extraArgsError, formatBytes, formatDate, parseExtraArgs, scheduleLabel, validateConfig, weekdayLabel } from "../lib/format";
 import { applyTheme } from "../lib/theme";
-import { checkForUpdates, isBusy, openBackupFolder, openDataFolder, openKeysFolder, openLogsFolder, openReleasePage, openRepository, pickDirectory, saveConfig, store } from "../store";
+import { checkForUpdates, isBusy, openBackupFolder, openDataFolder, openKeysFolder, openLogsFolder, openReleasePage, openRepository, openTrashFolder, pickDirectory, saveConfig, store, trashBytes, trashCount } from "../store";
 import type { Config, SettingsSection, Theme } from "../lib/types";
 
 interface RailItem { id: SettingsSection; label: string; depth?: 2; when?: () => boolean }
@@ -16,6 +16,7 @@ const railItems: RailItem[] = [
   { id: "schedule", label: "计划与保留" },
   { id: "schedule-time", label: "执行时间", depth: 2, when: () => draft.value?.schedule.kind !== "manual" },
   { id: "schedule-keep", label: "保留份数", depth: 2 },
+  { id: "trash", label: "回收站", depth: 2 },
   { id: "compress", label: "压缩" },
   { id: "compress-advanced", label: "高级参数", depth: 2 },
   { id: "encryption", label: "本地加密" },
@@ -409,7 +410,7 @@ function setRetention(delta: number) {
             <h2>保留份数</h2>
             <div class="setting-row">
               <div class="setting-copy">
-                <div class="setting-desc">保留最近 N 份普通备份，更旧的普通备份会被自动删除；恢复前快照不计入自动清理。</div>
+                <div class="setting-desc">保留最近 N 份普通备份，更旧的普通备份会被移入回收站；恢复前快照不计入自动清理。</div>
               </div>
               <div class="setting-control">
                 <div class="stepper">
@@ -417,6 +418,21 @@ function setRetention(delta: number) {
                   <input v-model.number="draft.retention.local" type="number" min="1" max="99" aria-label="保留份数" />
                   <button type="button" aria-label="增加保留份数" @click="setRetention(1)">+</button>
                 </div>
+              </div>
+            </div>
+          </section>
+
+          <section id="sec-trash" class="set-sec">
+            <h2>回收站</h2>
+            <div class="setting-row stacked">
+              <div class="setting-copy">
+                <div class="setting-desc">删除的归档先移到备份目录内的回收站，可以随时找回；超过保留天数后自动彻底删除。当前 {{ trashCount }} 项 · {{ formatBytes(trashBytes) }}。</div>
+              </div>
+              <div class="setting-control">
+                <div class="segmented" role="group" aria-label="回收站保留天数">
+                  <button v-for="days in [1, 7, 30, 90]" :key="days" type="button" :class="{ active: draft.retention.trashDays === days }" :aria-pressed="draft.retention.trashDays === days" @click="draft.retention.trashDays = days">{{ days }} 天</button>
+                </div>
+                <button class="btn btn-ghost btn-small" type="button" @click="openTrashFolder()">打开回收站目录</button>
               </div>
             </div>
           </section>

@@ -106,3 +106,20 @@ func processNames() ([]string, error) {
 	}
 	return names, nil
 }
+
+// SetHidden marks a directory as hidden so the trash is not visible as an
+// ordinary folder in Explorer. Failure is cosmetic and never blocks a move.
+func SetHidden(path string) error {
+	pointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	attributes, err := windows.GetFileAttributes(pointer)
+	if err != nil {
+		return err
+	}
+	if attributes&windows.FILE_ATTRIBUTE_HIDDEN != 0 {
+		return nil
+	}
+	return windows.SetFileAttributes(pointer, attributes|windows.FILE_ATTRIBUTE_HIDDEN)
+}

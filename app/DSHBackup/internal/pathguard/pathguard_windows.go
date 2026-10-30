@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/windows"
 )
@@ -156,4 +157,16 @@ func Identity(path string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%08x:%08x%08x", info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow), nil
+}
+
+func IsReparsePoint(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	data, ok := info.Sys().(*syscall.Win32FileAttributeData)
+	if !ok {
+		return false, nil
+	}
+	return data.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0, nil
 }

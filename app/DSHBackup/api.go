@@ -1,6 +1,7 @@
 package main
 
 import (
+	"DSHBackup/internal/backup"
 	"DSHBackup/internal/config"
 	"DSHBackup/internal/manifest"
 	"DSHBackup/internal/sidecar"
@@ -90,9 +91,10 @@ type Bootstrap struct {
 	Warnings           []string            `json:"warnings"`
 	LogsPath           string              `json:"logsPath"`
 	BackupRootIdentity string              `json:"backupRootIdentity"`
+	Trash              backup.TrashList    `json:"trash"`
 }
 
-type DeleteSnapshotRequest struct {
+type MoveToTrashRequest struct {
 	SnapshotID           string `json:"snapshotId"`
 	ExpectedRootIdentity string `json:"expectedRootIdentity"`
 	ExpectedBackupDir    string `json:"expectedBackupDir"`

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"DSHBackup/internal/apppath"
+	"DSHBackup/internal/backup"
 	"DSHBackup/internal/config"
 	"DSHBackup/internal/logging"
 	"DSHBackup/internal/manifest"
@@ -222,24 +223,28 @@ func TestDeleteRequiresMatchingBackupRootIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := DeleteSnapshotRequest{
+	request := MoveToTrashRequest{
 		SnapshotID:           id,
 		ExpectedRootIdentity: "wrong-identity",
 		ExpectedBackupDir:    app.paths.BackupDir(),
 		ExpectedSHA256:       value.Archive.SHA256,
 	}
-	if err := app.DeleteLocalSnapshot(request); err == nil {
+	if err := app.MoveToTrash(request); err == nil {
 		t.Fatal("wrong backup root identity accepted")
 	}
 	if _, err := os.Stat(archive); err != nil {
 		t.Fatalf("archive removed after rejected identity: %v", err)
 	}
 	request.ExpectedRootIdentity = identity
-	if err := app.DeleteLocalSnapshot(request); err != nil {
+	if err := app.MoveToTrash(request); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(archive); !os.IsNotExist(err) {
-		t.Fatalf("archive still exists after delete: %v", err)
+		t.Fatalf("archive still exists in the backup directory after delete: %v", err)
+	}
+	trashed := filepath.Join(backup.TrashRoot(app.paths.BackupDir()), id, manifest.ArchiveName(id))
+	if _, err := os.Stat(trashed); err != nil {
+		t.Fatalf("archive should be in the trash: %v", err)
 	}
 }
 

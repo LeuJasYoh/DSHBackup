@@ -999,3 +999,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.nav-divider { height: 1px; margin: 8px 10px; background: var(--border); }
+.blocked-note {
+  display: inline-block; max-width: 32ch; color: var(--amber); font-size: 11.5px; line-height: 1.5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
+}

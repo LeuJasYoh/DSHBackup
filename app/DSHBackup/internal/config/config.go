@@ -45,7 +45,8 @@ type Schedule struct {
 }
 
 type Retention struct {
-	Local int `json:"local"`
+	Local     int `json:"local"`
+	TrashDays int `json:"trashDays"`
 }
 
 type Config struct {
@@ -87,7 +88,8 @@ func Default(defaultBackupDir string) Config {
 			Weekday: 1,
 		},
 		Retention: Retention{
-			Local: 7,
+			Local:     7,
+			TrashDays: 7,
 		},
 		PreRestoreSnapshot: true,
 		VerifyAfterBackup:  true,
@@ -164,6 +166,15 @@ func (c *Config) Normalize(defaultBackupDir string) {
 	if c.Retention.Local == 0 {
 		c.Retention.Local = 7
 	}
+	if c.Retention.TrashDays == 0 {
+		c.Retention.TrashDays = 7
+	}
+	if c.Retention.TrashDays < 1 {
+		c.Retention.TrashDays = 7
+	}
+	if c.Retention.TrashDays > 365 {
+		c.Retention.TrashDays = 365
+	}
 }
 
 func Save(path string, cfg Config) error {
@@ -221,6 +232,9 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Retention.Local < 1 || cfg.Retention.Local > 99 {
 		return errors.New("本地保留份数必须在 1 到 99 之间")
+	}
+	if cfg.Retention.TrashDays < 1 || cfg.Retention.TrashDays > 365 {
+		return errors.New("回收站保留天数必须在 1 到 365 之间")
 	}
 	switch cfg.Schedule.Kind {
 	case ScheduleManual, ScheduleDaily, ScheduleWeekly:

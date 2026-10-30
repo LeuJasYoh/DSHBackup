@@ -78,6 +78,7 @@ func (a *App) SaveConfig(input config.Config) error {
 
 // 调用者持有 taskMu 和 cfgWriteMu，防止任务启动或计划写入与设置保存交错。
 func (a *App) saveConfigInternal(cfg config.Config) error {
+	previousBackupDir := a.configSnapshot().BackupDir
 	cfg.SchemaVersion = config.SchemaVersion
 	cfg.Normalize(a.paths.DefaultBackupDir)
 	if err := config.Validate(cfg); err != nil {
@@ -117,6 +118,9 @@ func (a *App) saveConfigInternal(cfg config.Config) error {
 		return fmt.Errorf("保存配置失败：%w", err)
 	}
 	a.setConfig(cfg)
+	if previousBackupDir != "" && !strings.EqualFold(filepath.Clean(previousBackupDir), filepath.Clean(cfg.BackupDir)) {
+		a.warnLeftoverTrash(previousBackupDir)
+	}
 	if a.logger != nil {
 		a.logger.Info("config.save", "配置已保存", map[string]any{
 			"encryption": cfg.EncryptionLocal,

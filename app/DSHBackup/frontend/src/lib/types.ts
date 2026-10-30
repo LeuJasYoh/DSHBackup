@@ -1,10 +1,10 @@
 export type CompressionLevel = "store" | "fast" | "quick" | "balanced" | "high" | "max";
 export type ScheduleKind = "manual" | "daily" | "weekly";
 export type Theme = "system" | "light" | "dark";
-export type Page = "dashboard" | "history" | "settings";
+export type Page = "dashboard" | "history" | "trash" | "settings";
 export type SettingsSection =
   | "backup-dir" | "desktop" | "verify" | "prerestore"
-  | "schedule" | "schedule-time" | "schedule-keep"
+  | "schedule" | "schedule-time" | "schedule-keep" | "trash"
   | "compress" | "compress-advanced"
   | "encryption" | "keys" | "diagnostics"
   | "theme" | "update" | "runtime";
@@ -21,7 +21,7 @@ export interface ScheduleConfig {
   time: string;
   weekday: number;
 }
-export interface RetentionConfig { local: number }
+export interface RetentionConfig { local: number; trashDays: number }
 export interface Config {
   schemaVersion: number;
   theme: Theme;
@@ -138,6 +138,7 @@ export interface Bootstrap {
   warnings: string[];
   logsPath: string;
   backupRootIdentity?: string;
+  trash: TrashList;
 }
 export interface OnboardingInput {
   backupDir: string;
@@ -153,11 +154,38 @@ export interface RestoreRequest {
   force: boolean;
 }
 export interface VerifyRequest { snapshotId: string }
-export interface DeleteSnapshotRequest {
+export interface MoveToTrashRequest {
   snapshotId: string;
   expectedRootIdentity: string;
   expectedBackupDir: string;
   expectedSha256: string;
+}
+export interface TrashItem {
+  snapshotId: string;
+  archiveName: string;
+  size: number;
+  movedAt: string;
+  expiresAt: string;
+  daysLeft: number;
+  reason: string;
+  encrypted: boolean;
+  kind: string;
+  captureStatus?: string;
+  archiveMissing: boolean;
+  belongsToCurrentRoot: boolean;
+  restorable: boolean;
+  blockedReason?: string;
+}
+export interface TrashList {
+  items: TrashItem[];
+  count: number;
+  bytes: number;
+  root: string;
+  warnings?: string[];
+}
+export interface TrashEmptyResult {
+  removed: number;
+  failed: string[];
 }
 export interface TaskProgress {
   taskId: string;

@@ -384,11 +384,11 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 			warnings = append(warnings, "本次备份存在未完整的项目，已跳过自动清理旧备份")
 		} else {
 			report("cleanup", 98, "应用本地保留策略", 0, 0)
-			deleted, err := m.applyLocalRetention(ctx, input.Config.BackupDir, input.Config.Retention.Local, manifestValue.ID)
+			moved, err := m.applyLocalRetention(ctx, input.Config.BackupDir, input.Config.Retention.Local, manifestValue.ID, input.Config.Retention.TrashDays)
 			if err != nil {
 				warnings = append(warnings, "本地保留策略执行失败："+err.Error())
-			} else if len(deleted) > 0 {
-				warnings = append(warnings, "已按保留策略清理本地快照："+strings.Join(deleted, "、"))
+			} else if len(moved) > 0 {
+				warnings = append(warnings, "已按保留策略把旧备份移入回收站："+strings.Join(moved, "、"))
 			}
 		}
 	}
@@ -713,29 +713,6 @@ func (m *Manager) VerifyLocal(ctx context.Context, taskID string, snapshot manif
 	return nil
 }
 
-func (m *Manager) DeleteLocal(_ context.Context, snapshot manifest.Snapshot, backupDir string) error {
-	if snapshot.LocalPath == "" || snapshot.ManifestPath == "" {
-		return errors.New("快照没有本地文件")
-	}
-	inside, err := pathguard.Contains(snapshot.LocalPath, backupDir)
-	if err != nil {
-		return fmt.Errorf("无法检查归档位置：%w", err)
-	}
-	if !inside {
-		return errors.New("拒绝删除备份目录之外的文件")
-	}
-	if err := os.Remove(snapshot.LocalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	manifestPaths := append([]string{snapshot.ManifestPath}, snapshot.ManifestAliases...)
-	for _, manifestPath := range manifestPaths {
-		if err := os.Remove(manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("归档已删除，但清理清单失败：%w", err)
-		}
-	}
-	return nil
-}
-
 func (m *Manager) ListLocal(backupDir string) ([]manifest.Snapshot, []string, error) {
 	return manifest.Scan(backupDir)
 }
@@ -982,7 +959,10 @@ func countFiles(root string) int64 {
 	return count
 }
 
-func (m *Manager) applyLocalRetention(ctx context.Context, backupDir string, keep int, protectID string) ([]string, error) {
+// applyLocalRetention moves archives past the keep count into the recycle bin
+// instead of deleting them, so a mis-set keep count is recoverable for the
+// trash retention window.
+func (m *Manager) applyLocalRetention(ctx context.Context, backupDir string, keep int, protectID string, trashDays int) ([]string, error) {
 	if keep < 1 {
 		keep = 1
 	}
@@ -1026,29 +1006,23 @@ func (m *Manager) applyLocalRetention(ctx context.Context, backupDir string, kee
 		}
 	}
 
-	var deleted []string
+	var moved []string
 	for _, snapshot := range candidates {
 		if survivors[snapshot.ID] || snapshot.ID == protectID {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
-			return deleted, err
+			return moved, err
 		}
-		if err := os.Remove(snapshot.LocalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return deleted, fmt.Errorf("删除旧归档 %s 失败，已保留其清单：%w", snapshot.ID, err)
+		if _, err := MoveToTrash(backupDir, snapshot, TrashReasonRetention, trashDays, m.appVersion); err != nil {
+			return moved, fmt.Errorf("把旧归档 %s 移入回收站失败：%w", snapshot.ID, err)
 		}
-		manifestPaths := append([]string{snapshot.ManifestPath}, snapshot.ManifestAliases...)
-		for _, manifestPath := range manifestPaths {
-			if err := os.Remove(manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return deleted, fmt.Errorf("旧归档 %s 已删除，但清理清单失败：%w", snapshot.ID, err)
-			}
-		}
-		deleted = append(deleted, snapshot.ID)
+		moved = append(moved, snapshot.ID)
 		if m.logger != nil {
-			m.logger.Info("retention.local", "清理旧本地快照", map[string]any{"id": snapshot.ID})
+			m.logger.Info("retention.local", "旧本地快照移入回收站", map[string]any{"id": snapshot.ID})
 		}
 	}
-	return deleted, nil
+	return moved, nil
 }
 
 func verifyRestored(entries map[string]bool, targetDSH string, desktopRestored bool, desktopDir string) error {

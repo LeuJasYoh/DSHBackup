@@ -199,6 +199,8 @@ func TestLegacyConfigLoadsAndSavesLocalFields(t *testing.T) {
 				legacy["github"] = map[string]any{"clientId": "old-id", "owner": "old-owner", "repo": "old-repo", "autoUpload": true}
 				legacy["proxy"] = map[string]any{"mode": "manual", "url": "invalid-old-address", "passwordSet": true}
 				legacy["retention"].(map[string]any)["cloud"] = -1
+				// Pre-1.3 configs had no trash retention field at all.
+				delete(legacy["retention"].(map[string]any), "trashDays")
 				raw, err = json.Marshal(legacy)
 				if err != nil {
 					t.Fatal(err)
@@ -233,7 +235,7 @@ func TestLegacyConfigLoadsAndSavesLocalFields(t *testing.T) {
 				if err := json.Unmarshal(saved["retention"], &retention); err != nil {
 					t.Fatal(err)
 				}
-				if len(retention) != 1 || retention["local"] != want.Retention.Local {
+				if len(retention) != 2 || retention["local"] != want.Retention.Local || retention["trashDays"] != 7 {
 					t.Fatalf("unexpected retention: %v", retention)
 				}
 				reloaded, err := Load(path, "unused")
@@ -241,6 +243,33 @@ func TestLegacyConfigLoadsAndSavesLocalFields(t *testing.T) {
 					t.Fatalf("saved local settings changed: %+v, %v", reloaded, err)
 				}
 			})
+		}
+	}
+}
+
+func TestTrashRetentionDaysNormalize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cases := []struct {
+		raw  string
+		want int
+	}{
+		{`{"retention":{"local":7}}`, 7},
+		{`{"retention":{"local":7,"trashDays":0}}`, 7},
+		{`{"retention":{"local":7,"trashDays":-3}}`, 7},
+		{`{"retention":{"local":7,"trashDays":30}}`, 30},
+		{`{"retention":{"local":7,"trashDays":9000}}`, 365},
+	}
+	for _, test := range cases {
+		if err := os.WriteFile(path, []byte(test.raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path, filepath.Join(dir, "fallback"))
+		if err != nil {
+			t.Fatalf("%s: %v", test.raw, err)
+		}
+		if cfg.Retention.TrashDays != test.want {
+			t.Fatalf("%s: trash days = %d, want %d", test.raw, cfg.Retention.TrashDays, test.want)
 		}
 	}
 }

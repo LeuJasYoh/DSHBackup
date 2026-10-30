@@ -16,3 +16,5 @@ func DiskFree(_ string) (DiskStatus, error) {
 func IsDSHRunning(_ string) (bool, []string, error) {
 	return false, nil, nil
 }
+
+func SetHidden(_ string) error { return nil }

@@ -2,7 +2,7 @@ import { computed, reactive } from "vue";
 import { api, copyToClipboard, isPreviewMode } from "./lib/bridge";
 import { errorMessage, restoreBlockReason } from "./lib/format";
 import { applyTheme, normalizeTheme } from "./lib/theme";
-import type { Bootstrap, Config, DeleteSnapshotRequest, OnboardingInput, Page, RestoreRequest, SettingsSection, Snapshot, TaskContext, TaskProgress, TaskResult, UpdateInfo } from "./lib/types";
+import type { Bootstrap, Config, MoveToTrashRequest, OnboardingInput, Page, RestoreRequest, SettingsSection, Snapshot, TaskContext, TaskProgress, TaskResult, TrashItem, TrashList, UpdateInfo } from "./lib/types";
 
 export interface ConfirmState {
   title: string;
@@ -16,16 +16,6 @@ export interface ConfirmState {
 export interface ToastAction { label: string; run: () => void }
 export interface ToastState { text: string; type: "info" | "success" | "warning" | "error"; action: ToastAction | null }
 const emptyToast: ToastState = { text: "", type: "info", action: null };
-interface PendingDelete {
-  snapshot: Snapshot;
-  rootIdentity: string;
-  backupDir: string;
-  deadline: number;
-  timer: ReturnType<typeof setTimeout>;
-  committing: boolean;
-}
-let pendingDelete: PendingDelete | null = null;
-let queuedToast: { text: string; type: ToastState["type"]; duration: number } | null = null;
 export const store = reactive({
   ready: false,
   boot: null as Bootstrap | null,
@@ -48,9 +38,7 @@ export const store = reactive({
   notice: null as { level: "warning" | "error"; message: string; time: string } | null,
   modals: { restore: false, help: false, confirm: null as ConfirmState | null },
   saving: false,
-  deleting: false,
-  pendingSnapshotId: "",
-  pendingRootIdentity: "",
+  trashBusy: false,
   refreshing: false,
   previewMode: isPreviewMode,
   update: null as UpdateInfo | null,
@@ -60,39 +48,28 @@ export const store = reactive({
   refreshTimer: null as ReturnType<typeof setTimeout> | null,
 });
 export const snapshots = computed(() => {
-  const currentIdentity = store.boot?.backupRootIdentity ?? "";
   return [...(store.boot?.localSnapshots ?? [])]
-    .filter((snapshot) => !store.pendingSnapshotId || store.pendingRootIdentity !== currentIdentity || store.pendingSnapshotId !== snapshot.id)
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id));
 });
+export const trashItems = computed(() => store.boot?.trash.items ?? []);
+export const trashCount = computed(() => trashItems.value.length);
+export const trashBytes = computed(() => store.boot?.trash.bytes ?? 0);
 export const latestSnapshot = computed(() => snapshots.value[0]);
-export const isBusy = computed(() => store.startingTask || !!store.task || store.saving || store.deleting);
+export const isBusy = computed(() => store.startingTask || !!store.task || store.saving);
 export const totalSourceBytes = computed(() => store.boot?.dsh.sources.reduce((sum, source) => sum + (source.exists ? source.bytes : 0), 0) ?? 0);
 export const totalSourceFiles = computed(() => store.boot?.dsh.sources.reduce((sum, source) => sum + (source.exists ? source.files : 0), 0) ?? 0);
 export const localUsage = computed(() => store.boot?.localSnapshots.reduce((sum, snapshot) => sum + snapshot.size, 0) ?? 0);
 
 export function showToast(text: string, type: ToastState["type"] = "info", duration = 3200, action: ToastAction | null = null) {
   if (!text) return;
-  if (pendingDelete && !action) {
-    queuedToast = { text, type, duration };
-    return;
-  }
   if (store.toastTimer) clearTimeout(store.toastTimer);
   store.toast = { text, type, action };
   store.toastTimer = setTimeout(() => dismissToast(true), duration);
 }
-function flushQueuedToast() {
-  if (!queuedToast) return;
-  const next = queuedToast;
-  queuedToast = null;
-  showToast(next.text, next.type, next.duration);
-}
-export function dismissToast(force = false) {
-  if (pendingDelete && !force) return;
+export function dismissToast(_force = false) {
   if (store.toastTimer) clearTimeout(store.toastTimer);
   store.toastTimer = null;
   store.toast = { ...emptyToast };
-  flushQueuedToast();
 }
 export function dismissNotice() { store.notice = null; }
 let refreshSequence = 0;
@@ -101,6 +78,7 @@ function normalizeBootstrap(data: Bootstrap): Bootstrap {
     ...data,
     config: { ...data.config, theme: normalizeTheme(data.config.theme), updateCheck: data.config.updateCheck !== false, compression: { ...data.config.compression, extraArgs: data.config.compression.extraArgs ?? [] } },
     localSnapshots: data.localSnapshots ?? [], warnings: data.warnings ?? [],
+    trash: { items: data.trash?.items ?? [], count: data.trash?.count ?? 0, bytes: data.trash?.bytes ?? 0, root: data.trash?.root ?? "", warnings: data.trash?.warnings ?? [] },
     app: { ...data.app, warnings: data.app?.warnings ?? [] },
     dsh: { ...data.dsh, evidence: data.dsh?.evidence ?? [], sources: data.dsh?.sources ?? [] },
   };
@@ -137,7 +115,6 @@ function receiveTaskEvent(event: TaskEvent) {
   if (store.task && store.task.taskId !== payload.taskId) return;
   if ("progress" in event) {
     if (!store.task) {
-      cancelPendingDelete();
       store.taskStartedAt = Date.now();
       store.taskContext = { kind: payload.kind }; // Scheduled tasks: don't infer options from mutable config.
       store.taskResult = null;
@@ -162,7 +139,14 @@ export async function init() {
   if (!store.unsubscribes.length) store.unsubscribes.push(
     api.onTaskProgress((progress) => receiveTaskEvent({ progress })),
     api.onTaskResult((result) => receiveTaskEvent({ result })),
-    api.onStateChanged(() => scheduleRefresh()),
+    api.onStateChanged((payload) => {
+      const reason = payload?.reason ?? "";
+      if (reason === "snapshot-delete" || reason === "trash-restore" || reason === "trash-delete" || reason === "trash-empty" || reason === "trash-purge") {
+        void refreshTrash();
+        return;
+      }
+      scheduleRefresh();
+    }),
     api.onNotice((notice) => {
       if (notice.level !== "info") store.notice = { ...notice, level: notice.level };
       else { showToast(notice.message); scheduleRefresh(600); }
@@ -179,6 +163,7 @@ export async function init() {
       "compress", "compress-advanced", "encryption", "keys", "diagnostics", "theme", "update", "runtime",
     ];
     if (route === "history") go("history");
+    else if (route === "trash") go("trash");
     else if (route === "settings" || sections.includes(route as SettingsSection)) {
       const section = params.get("section") ?? route;
       openSettings(sections.includes(section as SettingsSection) ? section as SettingsSection : "backup-dir");
@@ -191,10 +176,6 @@ export function dispose() {
   store.unsubscribes.forEach((off) => off());
   store.unsubscribes = [];
   if (store.refreshTimer) clearTimeout(store.refreshTimer);
-  if (pendingDelete) clearTimeout(pendingDelete.timer);
-  pendingDelete = null;
-  clearPendingState();
-  queuedToast = null;
   dismissToast(true);
 }
 export function go(page: Page) {
@@ -306,7 +287,6 @@ async function reloadAfterSave(): Promise<Config> {
 }
 export async function saveConfig(config: Config): Promise<Config> {
   if (isBusy.value) throw new Error("操作进行中，请等待完成后保存设置。");
-  cancelPendingDelete();
   store.saving = true;
   try {
     await api.saveConfig(config);
@@ -318,7 +298,6 @@ export async function saveConfig(config: Config): Promise<Config> {
 }
 export async function completeOnboarding(input: OnboardingInput) {
   if (isBusy.value) throw new Error("操作进行中，请稍后重试。");
-  cancelPendingDelete();
   store.saving = true;
   try { await api.completeOnboarding(input); const normalized = await reloadAfterSave(); applyTheme(normalized.theme, true); }
   finally { store.saving = false; }
@@ -330,90 +309,117 @@ export async function checkDSH(notify = true) {
     if (notify) showToast(status.running ? "检测到 DSH 正在运行" : "未检测到正在运行的 DSH", status.running ? "warning" : "success");
   } catch (error) { showToast(errorMessage(error), "error"); }
 }
-// 删除可撤销：服务端列表保持事实，pending 只过滤显示；6 秒后才提交。
-const UNDO_WINDOW = 6000;
-
-function clearPendingState() {
-  store.pendingSnapshotId = "";
-  store.pendingRootIdentity = "";
-}
-function cancelPendingDelete() {
-  if (!pendingDelete) return;
-  clearTimeout(pendingDelete.timer);
-  pendingDelete = null;
-  clearPendingState();
-  dismissToast(true);
+function archiveName(snapshot: Snapshot): string {
+  return snapshot.localPath?.split(/[\\/]/).pop() || `dsh-backup-${snapshot.id}.7z`;
 }
 
-async function commitPendingDelete() {
-  if (!pendingDelete || pendingDelete.committing) return;
-  const pending = pendingDelete;
-  clearTimeout(pending.timer);
-  if (store.startingTask || store.task || store.saving) {
-    pendingDelete = null;
-    clearPendingState();
-    dismissToast(true);
-    showToast("有任务正在进行，已跳过这次删除", "warning");
-    return;
-  }
-  pending.committing = true;
-  store.deleting = true;
-  try {
-    const request: DeleteSnapshotRequest = {
-      snapshotId: pending.snapshot.id,
-      expectedRootIdentity: pending.rootIdentity,
-      expectedBackupDir: pending.backupDir,
-      expectedSha256: pending.snapshot.sha256,
-    };
-    await api.deleteLocalSnapshot(request);
-    pendingDelete = null;
-    clearPendingState();
-    dismissToast(true);
-    await refresh();
-    if (store.bootError) { showToast(`已删除，但列表刷新失败：${store.bootError}`, "warning"); return; }
-    showToast("备份已删除，原数据不受影响", "success");
-  } catch (error) {
-    pendingDelete = null;
-    clearPendingState();
-    dismissToast(true);
-    await refresh();
-    showToast(errorMessage(error), "error");
-  } finally {
-    store.deleting = false;
-  }
+function applyLocalTrashMove(snapshot: Snapshot) {
+  const boot = store.boot;
+  if (!boot) return;
+  boot.localSnapshots = boot.localSnapshots.filter((item) => item.id !== snapshot.id);
+  const days = boot.config.retention.trashDays || 7;
+  const now = Date.now();
+  const item: TrashItem = {
+    snapshotId: snapshot.id,
+    archiveName: archiveName(snapshot),
+    size: snapshot.size,
+    movedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + days * 86_400_000).toISOString(),
+    daysLeft: days,
+    reason: "manual",
+    encrypted: snapshot.encrypted,
+    kind: snapshot.kind,
+    captureStatus: snapshot.captureStatus,
+    archiveMissing: snapshot.status === "missing",
+    belongsToCurrentRoot: true,
+    restorable: snapshot.status !== "missing",
+    blockedReason: snapshot.status === "missing" ? "归档文件已缺失，只能彻底删除" : undefined,
+  };
+  boot.trash.items = [item, ...boot.trash.items];
+  boot.trash.count = boot.trash.items.length;
+  boot.trash.bytes += item.size;
 }
 
-export function deleteSnapshot(snapshot: Snapshot) {
-  if (isBusy.value || pendingDelete) return;
-  const rootIdentity = store.boot?.backupRootIdentity ?? "";
-  if (!rootIdentity) {
+// Deleting is an instant same-volume rename into the backup directory's trash.
+// It never takes the task slot, so several deletes can run back to back and the
+// list updates in place instead of refetching the whole bootstrap.
+export async function deleteSnapshot(snapshot: Snapshot) {
+  const boot = store.boot;
+  const rootIdentity = boot?.backupRootIdentity ?? "";
+  if (!boot || !rootIdentity) {
     showToast("无法确认备份目录身份，已拒绝删除；请刷新后重试", "error");
     return;
   }
-  const name = snapshot.localPath?.split(/[\\/]/).pop() || `dsh-backup-${snapshot.id}.7z`;
-  const pending: PendingDelete = {
-    snapshot,
-    rootIdentity,
-    backupDir: store.boot?.config.backupDir ?? "",
-    deadline: Date.now() + UNDO_WINDOW,
-    committing: false,
-    timer: setTimeout(() => { void commitPendingDelete(); }, UNDO_WINDOW),
+  const request: MoveToTrashRequest = {
+    snapshotId: snapshot.id,
+    expectedRootIdentity: rootIdentity,
+    expectedBackupDir: boot.config.backupDir,
+    expectedSha256: snapshot.sha256,
   };
-  pendingDelete = pending;
-  store.pendingSnapshotId = snapshot.id;
-  store.pendingRootIdentity = rootIdentity;
-  showToast(`已删除 ${name}`, "info", UNDO_WINDOW, {
-    label: "撤销",
-    run: () => {
-      if (!pendingDelete || pendingDelete.committing) return;
-      clearTimeout(pendingDelete.timer);
-      pendingDelete = null;
-      clearPendingState();
-      dismissToast(true);
-      showToast("已撤销，归档仍在原处", "info");
+  try {
+    await api.moveToTrash(request);
+    applyLocalTrashMove(snapshot);
+    showToast(`已移入回收站：${archiveName(snapshot)}`, "info");
+  } catch (error) {
+    showToast(errorMessage(error), "error");
+  }
+}
+
+export async function refreshTrash(notify = false) {
+  try {
+    const trash: TrashList = await api.listTrash();
+    if (store.boot) store.boot.trash = { ...trash, items: trash.items ?? [], warnings: trash.warnings ?? [] };
+  } catch (error) {
+    if (notify) showToast(errorMessage(error), "error");
+  }
+}
+
+export async function restoreTrashItem(item: TrashItem) {
+  if (store.trashBusy) return;
+  store.trashBusy = true;
+  try {
+    await api.restoreFromTrash(item.snapshotId);
+    await refresh();
+    showToast("已找回归档", "success");
+  } catch (error) {
+    showToast(errorMessage(error), "error");
+  } finally {
+    store.trashBusy = false;
+  }
+}
+
+export function askDeleteTrashItem(item: TrashItem) {
+  askConfirm({
+    title: "彻底删除这份备份？",
+    message: `将永久删除 ${item.archiveName || item.snapshotId}，无法恢复。`,
+    detail: "DSH 的实际数据不受影响。",
+    confirmLabel: "彻底删除",
+    danger: true,
+    onConfirm: async () => {
+      await api.deleteTrashItem(item.snapshotId);
+      await refreshTrash();
     },
   });
 }
+
+export function askEmptyTrash() {
+  const count = trashCount.value;
+  if (!count) return;
+  askConfirm({
+    title: "清空回收站？",
+    message: `将永久删除回收站中的 ${count} 项内容，共 ${(trashBytes.value / 1024 / 1024).toFixed(1)} MB，无法恢复。`,
+    detail: "DSH 的实际数据不受影响。无法识别的条目会保留，不会被清空。",
+    confirmLabel: "清空回收站",
+    danger: true,
+    onConfirm: async () => {
+      const result = await api.emptyTrash();
+      await refreshTrash();
+      if (result.failed?.length) showToast(`已删除 ${result.removed} 项，${result.failed.length} 项未删除`, "warning");
+    },
+  });
+}
+
+export function openTrashFolder() { return openFolder(api.openTrashFolder); }
 async function openFolder(action: () => Promise<void>) {
   try { await action(); } catch (error) { showToast(errorMessage(error), "error"); }
 }

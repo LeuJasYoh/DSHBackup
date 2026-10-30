@@ -79,6 +79,8 @@ type App struct {
 	sources  []SourceInfo
 	sourceAt time.Time
 
+	trashMu sync.Mutex
+
 	updateMu     sync.Mutex
 	lastUpdate   UpdateInfo
 	lastUpdateAt time.Time
@@ -206,6 +208,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.scheduleBase = time.Now()
 	a.markReady()
+	go a.purgeTrashOnStartup()
 	go a.schedulerLoop()
 }
 
@@ -365,6 +368,14 @@ func (a *App) GetBootstrap() (Bootstrap, error) {
 		}
 	}
 	rootIdentity, _ := pathguard.Identity(cfg.BackupDir)
+	a.trashMu.Lock()
+	trash, trashErr := backup.TrashState(cfg.BackupDir)
+	a.trashMu.Unlock()
+	if trashErr != nil {
+		warnings = append(warnings, "读取回收站失败："+trashErr.Error())
+		trash = backup.TrashList{Items: []backup.TrashItem{}, Root: backup.TrashRoot(cfg.BackupDir)}
+	}
+	warnings = append(warnings, trash.Warnings...)
 	return Bootstrap{
 		Config:             cfg,
 		App:                a.appInfo(writable),
@@ -379,6 +390,7 @@ func (a *App) GetBootstrap() (Bootstrap, error) {
 		Warnings:           dedupe(warnings),
 		LogsPath:           a.paths.LogsDir,
 		BackupRootIdentity: rootIdentity,
+		Trash:              trash,
 	}, nil
 }
 

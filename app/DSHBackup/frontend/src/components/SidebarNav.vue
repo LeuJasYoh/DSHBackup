@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { go, latestSnapshot, openRepository, snapshots, store } from "../store";
+import { go, latestSnapshot, openRepository, snapshots, store, trashCount } from "../store";
 import { formatTime } from "../lib/format";
 
 const sevenZip = computed(() => {
@@ -52,6 +52,19 @@ const updateVersion = computed(() => store.update?.available ? store.update.late
         <span class="nav-text">归档历史</span>
         <span v-if="snapshots.length" class="nav-badge">{{ snapshots.length }}</span>
       </button>
+      <button
+        class="nav-item"
+        :class="{ active: store.page === 'trash' }"
+        :aria-current="store.page === 'trash' ? 'page' : undefined"
+        aria-label="回收站"
+        title="回收站"
+        @click="go('trash')"
+      >
+        <svg class="icon"><use href="#i-recycle"></use></svg>
+        <span class="nav-text">回收站</span>
+        <span v-if="trashCount" class="nav-badge">{{ trashCount }}</span>
+      </button>
+      <div class="nav-divider" role="presentation"></div>
       <button
         class="nav-item"
         :class="{ active: store.page === 'settings' }"

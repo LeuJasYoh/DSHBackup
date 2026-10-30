@@ -82,7 +82,7 @@ function clearFilters() {
         @delete-local="deleteSnapshot($event)"
       />
       <div class="table-foot">
-        <span>保留策略：最近 {{ store.boot?.config.retention.local ?? 7 }} 份普通备份</span>
+        <span>保留策略：最近 {{ store.boot?.config.retention.local ?? 7 }} 份普通备份，更旧的移入回收站</span>
         <span>共 {{ snapshots.length }} 份 · {{ formatBytes(localUsage) }}</span>
       </div>
     </section>
@@ -96,7 +96,7 @@ function clearFilters() {
 
     <p class="page-note">
       <svg class="icon"><use href="#i-shield"></use></svg>
-      <span>“归档可用”表示文件存在且大小符合清单，不代表已经校验。缺失或异常的记录会保留，便于找回归档；删除备份不会删除 DSH 原数据，删除后 6 秒内可以撤销。</span>
+      <span>“归档可用”表示文件存在且大小符合清单，不代表已经校验。缺失或异常的记录会保留，便于找回归档；删除备份不会删除 DSH 原数据，归档会移入回收站，可在保留期内找回。</span>
     </p>
   </section>
 </template>

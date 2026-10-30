@@ -210,11 +210,21 @@ func TestEncryptedBackupVerifyRestore(t *testing.T) {
 	if manual == nil {
 		t.Fatal("manual snapshot not found")
 	}
-	if err := manager.DeleteLocal(context.Background(), *manual, paths.DefaultBackupDir); err != nil {
-		t.Fatalf("delete failed: %v", err)
+	if _, err := backup.MoveToTrash(paths.DefaultBackupDir, *manual, backup.TrashReasonManual, 7, "test"); err != nil {
+		t.Fatalf("move to trash failed: %v", err)
 	}
 	if _, err := os.Stat(manual.LocalPath); !os.IsNotExist(err) {
-		t.Fatal("archive should be deleted")
+		t.Fatal("archive should no longer sit in the backup directory")
+	}
+	trashed := filepath.Join(backup.TrashRoot(paths.DefaultBackupDir), manual.ID, filepath.Base(manual.LocalPath))
+	if _, err := os.Stat(trashed); err != nil {
+		t.Fatalf("archive should be in the trash: %v", err)
+	}
+	if err := backup.RestoreTrashItem(paths.DefaultBackupDir, manual.ID); err != nil {
+		t.Fatalf("restore from trash failed: %v", err)
+	}
+	if _, err := os.Stat(manual.LocalPath); err != nil {
+		t.Fatalf("archive should be back: %v", err)
 	}
 }
 

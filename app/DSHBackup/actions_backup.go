@@ -9,7 +9,6 @@ import (
 
 	"DSHBackup/internal/backup"
 	"DSHBackup/internal/manifest"
-	"DSHBackup/internal/pathguard"
 	"DSHBackup/internal/platform"
 	"DSHBackup/internal/sidecar"
 )
@@ -255,60 +254,6 @@ func (a *App) StartVerify(request VerifyRequest) (string, error) {
 		a.emitTaskResult(taskResult)
 	}()
 	return taskID, nil
-}
-
-func (a *App) DeleteLocalSnapshot(request DeleteSnapshotRequest) error {
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	err := a.awaitReady(waitCtx)
-	waitCancel()
-	if err != nil {
-		return errors.New("应用仍在初始化，请稍后重试")
-	}
-	if strings.TrimSpace(request.SnapshotID) == "" {
-		return errors.New("快照 ID 不能为空")
-	}
-	taskID, ctx, err := a.beginTask("delete")
-	if err != nil {
-		return err
-	}
-	defer a.finishTask(taskID)
-	cfg := a.configSnapshot()
-	identity, err := pathguard.Identity(cfg.BackupDir)
-	if err != nil {
-		return fmt.Errorf("无法确认当前备份目录身份：%w", err)
-	}
-	if request.ExpectedRootIdentity == "" || request.ExpectedRootIdentity != identity {
-		return errors.New("备份目录在选择后已改变，已拒绝删除；请刷新归档列表后重试")
-	}
-	snapshots, _, err := manifest.Scan(cfg.BackupDir)
-	if err != nil {
-		return err
-	}
-	var target *manifest.Snapshot
-	for index := range snapshots {
-		if snapshots[index].ID == request.SnapshotID {
-			target = &snapshots[index]
-			break
-		}
-	}
-	if target == nil {
-		return errors.New("找不到本地快照；请刷新归档列表")
-	}
-	if request.ExpectedSHA256 != "" && !strings.EqualFold(request.ExpectedSHA256, target.SHA256) {
-		return errors.New("归档在删除前发生变化，已拒绝删除；请刷新归档列表")
-	}
-	if target.Status == "conflict" {
-		return errors.New("该归档存在冲突的清单，请先人工处理重复清单后再删除")
-	}
-	manager := backup.NewManager(a.paths, a.sidecar, a.logger, a.sevenZipPath, a.sevenZipVersion, Version)
-	if err := manager.DeleteLocal(ctx, *target, cfg.BackupDir); err != nil {
-		return err
-	}
-	if a.logger != nil {
-		a.logger.Info("snapshot.delete", "删除本地快照", map[string]any{"id": request.SnapshotID})
-	}
-	a.emitStateChanged("snapshot-delete")
-	return nil
 }
 
 func (a *App) resolveSnapshot(id string) (manifest.Snapshot, error) {

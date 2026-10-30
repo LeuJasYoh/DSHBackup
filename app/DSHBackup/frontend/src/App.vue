@@ -9,6 +9,7 @@ import ConfirmModal from "./components/ConfirmModal.vue";
 import HelpModal from "./components/HelpModal.vue";
 import DashboardView from "./views/DashboardView.vue";
 import HistoryView from "./views/HistoryView.vue";
+import TrashView from "./views/TrashView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import { dispose, dismissUpdate, go, init, openReleasePage, retryLoad, store } from "./store";
 
@@ -121,6 +122,13 @@ onUnmounted(dispose);
       <path d="m6 7 1 13h10l1-13"></path>
       <path d="M10 11v5M14 11v5"></path>
     </symbol>
+    <symbol id="i-recycle" viewBox="0 0 24 24">
+      <path d="M4 7h16"></path>
+      <path d="M6.5 7 8 20h8l1.5-13"></path>
+      <path d="M9.5 7V4.5h5V7"></path>
+      <path d="M9.5 11v5M14.5 11v5"></path>
+      <path d="M10.5 4.5h3"></path>
+    </symbol>
     <symbol id="i-external" viewBox="0 0 24 24">
       <path d="M14 4h6v6"></path>
       <path d="m20 4-9 9"></path>
@@ -175,6 +183,7 @@ onUnmounted(dispose);
           <TopBar @help="store.modals.help = true" />
           <DashboardView />
           <HistoryView />
+          <TrashView />
           <SettingsView />
         </div>
       </main>

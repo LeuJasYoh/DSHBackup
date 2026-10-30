@@ -49,7 +49,7 @@ func TestRetentionMergesDuplicateManifestAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := &Manager{}
-	deleted, err := manager.applyLocalRetention(context.Background(), dir, 2, current.ID)
+	deleted, err := manager.applyLocalRetention(context.Background(), dir, 2, current.ID, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestRetentionKeepsManifestWhenArchiveDeleteFails(t *testing.T) {
 	}
 	defer windows.CloseHandle(handle)
 	manager := &Manager{}
-	deleted, retentionErr := manager.applyLocalRetention(context.Background(), dir, 1, current.ID)
+	deleted, retentionErr := manager.applyLocalRetention(context.Background(), dir, 1, current.ID, 7)
 	if retentionErr == nil {
 		t.Fatal("locked archive deletion was reported as successful")
 	}
@@ -106,7 +106,7 @@ func TestRetentionDoesNotCountPartialBackups(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := &Manager{}
-	deleted, err := manager.applyLocalRetention(context.Background(), dir, 1, partialID)
+	deleted, err := manager.applyLocalRetention(context.Background(), dir, 1, partialID, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
