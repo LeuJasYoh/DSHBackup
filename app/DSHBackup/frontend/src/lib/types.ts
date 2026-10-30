@@ -1,4 +1,4 @@
-export type CompressionLevel = "fast" | "balanced" | "max";
+export type CompressionLevel = "store" | "fast" | "quick" | "balanced" | "high" | "max";
 export type ScheduleKind = "manual" | "daily" | "weekly";
 export type Theme = "system" | "light" | "dark";
 export type Page = "dashboard" | "history" | "settings";
@@ -90,17 +90,22 @@ export interface Snapshot {
   fileCount: number;
   totalBytes: number;
   compression?: string;
+  captureStatus?: string;
+  scope?: string[];
   status: string;
   localPath?: string;
   manifestPath?: string;
+  manifestAliases?: string[];
 }
 export interface KeyInfo {
   exists: boolean;
+  canEncrypt?: boolean;
   generated?: boolean;
   publicKey?: string;
   keyId?: string;
   privatePath?: string;
   error?: string;
+  encryptionError?: string;
 }
 export interface DiskInfo { path: string; free: number; total: number }
 export interface ScheduleInfo {
@@ -132,6 +137,7 @@ export interface Bootstrap {
   schedule: ScheduleInfo;
   warnings: string[];
   logsPath: string;
+  backupRootIdentity?: string;
 }
 export interface OnboardingInput {
   backupDir: string;
@@ -147,6 +153,12 @@ export interface RestoreRequest {
   force: boolean;
 }
 export interface VerifyRequest { snapshotId: string }
+export interface DeleteSnapshotRequest {
+  snapshotId: string;
+  expectedRootIdentity: string;
+  expectedBackupDir: string;
+  expectedSha256: string;
+}
 export interface TaskProgress {
   taskId: string;
   kind: TaskKind;

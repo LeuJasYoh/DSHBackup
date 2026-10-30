@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -51,10 +52,18 @@ func safeReleaseURL(rawURL string) string {
 		return RepositoryReleases
 	}
 	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "github.com") {
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || !strings.EqualFold(parsed.Host, "github.com") {
 		return RepositoryReleases
 	}
-	if !strings.HasPrefix(parsed.Path, "/LeuJasYoh/DSHBackup/releases") {
+	cleaned := path.Clean(parsed.Path)
+	if cleaned != parsed.Path {
+		return RepositoryReleases
+	}
+	if parsed.RawPath != "" && path.Clean(parsed.RawPath) != parsed.RawPath {
+		return RepositoryReleases
+	}
+	prefix := "/LeuJasYoh/DSHBackup/releases"
+	if cleaned != prefix && !strings.HasPrefix(cleaned, prefix+"/") {
 		return RepositoryReleases
 	}
 	return rawURL

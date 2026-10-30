@@ -15,9 +15,13 @@ import (
 
 	"DSHBackup/internal/config"
 	"DSHBackup/internal/manifest"
+	"DSHBackup/internal/pathguard"
 )
 
 func (a *App) CompleteOnboarding(input OnboardingInput) error {
+	if err := a.readyError(); err != nil {
+		return err
+	}
 	a.taskMu.Lock()
 	defer a.taskMu.Unlock()
 	if a.active != nil {
@@ -47,6 +51,9 @@ func (a *App) CompleteOnboarding(input OnboardingInput) error {
 }
 
 func (a *App) SaveConfig(input config.Config) error {
+	if err := a.readyError(); err != nil {
+		return err
+	}
 	a.taskMu.Lock()
 	defer a.taskMu.Unlock()
 	if a.active != nil {
@@ -58,9 +65,13 @@ func (a *App) SaveConfig(input config.Config) error {
 	cfg := input
 	cfg.OnboardingComplete = current.OnboardingComplete
 	cfg.LastScheduledAt = current.LastScheduledAt
+	if current.ScheduleChanged(cfg) {
+		cfg.LastScheduledAt = time.Now().Format(time.RFC3339)
+	}
 	if err := a.saveConfigInternal(cfg); err != nil {
 		return err
 	}
+	a.setScheduleBlocked(false)
 	a.emitStateChanged("settings")
 	return nil
 }
@@ -72,14 +83,24 @@ func (a *App) saveConfigInternal(cfg config.Config) error {
 	if err := config.Validate(cfg); err != nil {
 		return err
 	}
-	if isPathInside(cfg.BackupDir, a.paths.DSHDataDir()) {
-		return errors.New("本地备份目录不能位于 .dsh 目录内")
-	}
-	if desktop := a.paths.DesktopStateDir(); desktop != "" && isPathInside(cfg.BackupDir, desktop) {
-		return errors.New("本地备份目录不能位于桌面登录态目录内")
-	}
-	if isPathInside(cfg.BackupDir, a.paths.DataDir) {
-		return errors.New("本地备份目录不能位于应用 data 目录内；data\\temp 会被启动清理")
+	for _, root := range []struct {
+		path    string
+		message string
+	}{
+		{a.paths.DSHDataDir(), "本地备份目录不能位于 .dsh 目录内"},
+		{a.paths.DesktopStateDir(), "本地备份目录不能位于桌面登录态目录内"},
+		{a.paths.DataDir, "本地备份目录不能位于应用 data 目录内"},
+	} {
+		if root.path == "" {
+			continue
+		}
+		contained, err := pathguard.Contains(cfg.BackupDir, root.path)
+		if err != nil {
+			return fmt.Errorf("无法检查备份目录边界：%w", err)
+		}
+		if contained {
+			return errors.New(root.message)
+		}
 	}
 	if _, err := ensureWritableDir(cfg.BackupDir); err != nil {
 		return fmt.Errorf("本地备份目录不可写：%w", err)
@@ -123,16 +144,37 @@ func (a *App) ensureEncryptionReady(ctx context.Context, cfg config.Config, gene
 		return errors.New(info.Error)
 	}
 	if info.Exists {
+		if info.CanEncrypt {
+			return nil
+		}
+		if !generate {
+			if info.EncryptionError != "" {
+				return errors.New(info.EncryptionError)
+			}
+			return errors.New("本地密钥不可用于加密")
+		}
+		ensureCtx, ensureCancel := context.WithTimeout(ctx, 10*time.Second)
+		repaired, repairErr := a.sidecar.KeysEnsure(ensureCtx, a.paths.KeysDir, false)
+		ensureCancel()
+		if repairErr != nil {
+			return fmt.Errorf("本地密钥不可用于加密：%w", repairErr)
+		}
+		if !repaired.CanEncrypt {
+			return errors.New("本地密钥不可用于加密，请检查 public.key 与 private.key 是否配对")
+		}
 		return nil
+	}
+	if strings.TrimSpace(info.PublicKey) != "" {
+		return errors.New("检测到公钥但找不到私钥，不会自动生成新密钥；请恢复 data\\keys 目录")
 	}
 	if err := a.ensureNoEncryptedLocalWithoutKeys(cfg); err != nil {
 		return err
 	}
 	if !generate {
-		return nil
+		return errors.New("本地密钥尚未生成")
 	}
 	ensureCtx, ensureCancel := context.WithTimeout(ctx, 10*time.Second)
-	_, err = a.sidecar.KeysEnsure(ensureCtx, a.paths.KeysDir)
+	_, err = a.sidecar.KeysEnsure(ensureCtx, a.paths.KeysDir, true)
 	ensureCancel()
 	if err != nil {
 		return fmt.Errorf("生成本地密钥失败：%w", err)
@@ -217,8 +259,11 @@ func (a *App) CopyText(text string) error {
 	if len(text) > 4096 {
 		return errors.New("文本过长")
 	}
-	if a.ctx != nil {
-		runtime.ClipboardSetText(a.ctx, text)
+	if a.ctx == nil {
+		return errors.New("应用尚未启动")
+	}
+	if err := runtime.ClipboardSetText(a.ctx, text); err != nil {
+		return fmt.Errorf("无法写入系统剪贴板：%w", err)
 	}
 	return nil
 }

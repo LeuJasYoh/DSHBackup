@@ -7,7 +7,6 @@ import (
 )
 
 var allowedPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`^-mx=[0-9]$`),
 	regexp.MustCompile(`(?i)^-md=(16|32|64|128|256|512|1024)m$`),
 	regexp.MustCompile(`^-mmt=(?:[1-9]|[1-5][0-9]|6[0-4])$`),
 	regexp.MustCompile(`^-mfb=(?:[5-9]|[1-9][0-9]|1[0-9]{2}|2[0-6][0-9]|27[0-3])$`),
@@ -45,12 +44,35 @@ func ValidateExtra(args []string) ([]string, error) {
 
 func LevelMX(level string) int {
 	switch level {
+	case "store":
+		return 0
 	case "fast":
 		return 1
+	case "quick":
+		return 3
+	case "high":
+		return 7
 	case "max":
 		return 9
 	default:
 		return 5
+	}
+}
+
+func LevelForMX(value int) string {
+	switch {
+	case value <= 0:
+		return "store"
+	case value == 1:
+		return "fast"
+	case value <= 3:
+		return "quick"
+	case value <= 6:
+		return "balanced"
+	case value <= 8:
+		return "high"
+	default:
+		return "max"
 	}
 }
 

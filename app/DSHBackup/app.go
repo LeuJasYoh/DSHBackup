@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,12 +21,13 @@ import (
 	"DSHBackup/internal/config"
 	"DSHBackup/internal/logging"
 	"DSHBackup/internal/manifest"
+	"DSHBackup/internal/pathguard"
 	"DSHBackup/internal/platform"
 	"DSHBackup/internal/sidecar"
 )
 
 var (
-	Version   = "1.2.1"
+	Version   = "1.2.3"
 	BuildTime = "dev"
 )
 
@@ -62,6 +66,14 @@ type App struct {
 	schedulerStop chan struct{}
 	schedulerDone chan struct{}
 	stopOnce      sync.Once
+	ready         chan struct{}
+	readyOnce     sync.Once
+	startupDone   chan struct{}
+	startupOnce   sync.Once
+
+	schedMu      sync.Mutex
+	schedBlocked bool
+	scheduleBase time.Time
 
 	sourceMu sync.Mutex
 	sources  []SourceInfo
@@ -73,13 +85,40 @@ type App struct {
 }
 
 func NewApp(paths apppath.Paths) *App {
-	return &App{paths: paths}
+	return &App{
+		paths:         paths,
+		ready:         make(chan struct{}),
+		startupDone:   make(chan struct{}),
+		schedulerStop: make(chan struct{}),
+		schedulerDone: make(chan struct{}),
+	}
+}
+
+func (a *App) markReady() {
+	a.readyOnce.Do(func() { close(a.ready) })
+}
+
+func (a *App) awaitReady(ctx context.Context) error {
+	select {
+	case <-a.ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (a *App) readyError() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := a.awaitReady(ctx); err != nil {
+		return errors.New("应用仍在初始化，请稍后重试")
+	}
+	return nil
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.schedulerStop = make(chan struct{})
-	a.schedulerDone = make(chan struct{})
+	defer a.startupOnce.Do(func() { close(a.startupDone) })
 	a.addWarning(a.paths.Ensure())
 
 	logger, err := logging.New(a.paths.LogsDir)
@@ -88,13 +127,18 @@ func (a *App) startup(ctx context.Context) {
 	} else {
 		a.logger = logger
 	}
-	a.addWarning(a.paths.CleanTemp())
-
 	cfg, loadErr := config.Load(a.paths.ConfigFile(), a.paths.DefaultBackupDir)
 	if loadErr != nil {
 		a.initWarnings = append(a.initWarnings, "配置加载失败，已使用默认值："+loadErr.Error())
 	}
-	a.cfg = cfg
+	a.setConfig(cfg)
+	if insideTemp, checkErr := pathguard.Contains(cfg.BackupDir, a.paths.TempDir); checkErr == nil && insideTemp {
+		a.initWarnings = append(a.initWarnings, "备份目录实际位于应用临时目录内，已跳过启动清理；请把备份目录移到其他位置")
+	} else if checkErr != nil {
+		a.initWarnings = append(a.initWarnings, "无法确认备份目录与临时目录的边界，已跳过启动清理："+checkErr.Error())
+	} else {
+		a.addWarning(a.paths.CleanTemp())
+	}
 
 	a.sidecarPath = a.paths.LocateSidecar()
 	if a.sidecarPath == "" {
@@ -115,22 +159,36 @@ func (a *App) startup(ctx context.Context) {
 		a.sevenZipError = "找不到内置的 7za.exe"
 		a.sevenZipOK = false
 		a.initWarnings = append(a.initWarnings, a.sevenZipError)
-	} else if a.sidecar != nil {
-		checkCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		check, checkErr := a.sidecar.Check7z(checkCtx, a.sevenZipPath)
-		cancel()
-		if checkErr != nil {
-			a.sevenZipError = "7za.exe 检查失败：" + checkErr.Error()
+	} else {
+		hash, hashErr := fileSHA256(a.sevenZipPath)
+		if hashErr != nil {
+			a.sevenZipError = "无法校验 7za.exe：" + hashErr.Error()
 			a.initWarnings = append(a.initWarnings, a.sevenZipError)
-		} else {
-			a.sevenZipVersion = check.Version
-			a.sevenZipSHA = check.SHA256
-			if !strings.EqualFold(check.SHA256, expected7zSHA256) {
-				a.sevenZipError = "内置 7za.exe 的 SHA-256 与发行版不一致，已阻止备份"
+		} else if !strings.EqualFold(hash, expected7zSHA256) {
+			a.sevenZipSHA = hash
+			a.sevenZipError = "内置 7za.exe 的 SHA-256 与发行版不一致，已阻止备份"
+			a.initWarnings = append(a.initWarnings, a.sevenZipError)
+		} else if a.sidecar != nil {
+			checkCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			check, checkErr := a.sidecar.Check7z(checkCtx, a.sevenZipPath)
+			cancel()
+			if checkErr != nil {
+				a.sevenZipError = "7za.exe 检查失败：" + checkErr.Error()
 				a.initWarnings = append(a.initWarnings, a.sevenZipError)
 			} else {
-				a.sevenZipOK = true
+				a.sevenZipVersion = check.Version
+				a.sevenZipSHA = check.SHA256
+				if !strings.EqualFold(check.SHA256, expected7zSHA256) {
+					a.sevenZipError = "内置 7za.exe 的 SHA-256 与发行版不一致，已阻止备份"
+					a.initWarnings = append(a.initWarnings, a.sevenZipError)
+				} else {
+					a.sevenZipOK = true
+				}
 			}
+		} else {
+			a.sevenZipSHA = hash
+			a.sevenZipError = "Rust sidecar 不可用，无法检查 7za.exe"
+			a.initWarnings = append(a.initWarnings, a.sevenZipError)
 		}
 	}
 
@@ -146,10 +204,17 @@ func (a *App) startup(ctx context.Context) {
 			"sevenZip": a.sevenZipVersion,
 		})
 	}
+	a.scheduleBase = time.Now()
+	a.markReady()
 	go a.schedulerLoop()
 }
 
 func (a *App) shutdown(_ context.Context) {
+	select {
+	case <-a.startupDone:
+	case <-time.After(5 * time.Second):
+	}
+	a.markReady()
 	a.stopOnce.Do(func() {
 		close(a.schedulerStop)
 		select {
@@ -220,6 +285,12 @@ func (a *App) setConfig(cfg config.Config) {
 }
 
 func (a *App) GetBootstrap() (Bootstrap, error) {
+	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	err := a.awaitReady(waitCtx)
+	cancel()
+	if err != nil {
+		return Bootstrap{}, errors.New("应用仍在初始化，请稍后重试")
+	}
 	cfg := a.configSnapshot()
 	localSnapshots, warnings, scanErr := manifest.Scan(cfg.BackupDir)
 	if scanErr != nil {
@@ -262,6 +333,8 @@ func (a *App) GetBootstrap() (Bootstrap, error) {
 	}
 	if a.sidecar == nil {
 		warnings = append(warnings, a.sidecarError)
+	} else if !a.sidecar.Alive() {
+		warnings = append(warnings, "Rust sidecar 已退出；请重启应用后再执行备份或恢复")
 	}
 	if !a.sevenZipOK {
 		warnings = append(warnings, a.sevenZipError)
@@ -281,20 +354,31 @@ func (a *App) GetBootstrap() (Bootstrap, error) {
 		} else if cfg.EncryptionLocal {
 			warnings = append(warnings, "加密已启用，但本地密钥尚未生成；下一次备份前会生成或提示恢复私钥")
 		}
+	} else if !keyInfo.CanEncrypt {
+		message := keyInfo.EncryptionError
+		if message == "" {
+			message = "公钥与私钥不匹配或公钥缺失，新的加密备份会被阻止"
+		}
+		warnings = append(warnings, message)
+		if cfg.EncryptionLocal {
+			warnings = append(warnings, "本地加密当前不可用于新建备份；已有备份仍可使用有效私钥尝试恢复")
+		}
 	}
+	rootIdentity, _ := pathguard.Identity(cfg.BackupDir)
 	return Bootstrap{
-		Config:         cfg,
-		App:            a.appInfo(writable),
-		Paths:          a.pathsInfo(cfg),
-		DSH:            dsh,
-		LocalSnapshots: localSnapshots,
-		Latest:         latest,
-		Key:            keyInfo,
-		KeyError:       keyErr,
-		Disk:           disk,
-		Schedule:       a.scheduleInfo(cfg),
-		Warnings:       dedupe(warnings),
-		LogsPath:       a.paths.LogsDir,
+		Config:             cfg,
+		App:                a.appInfo(writable),
+		Paths:              a.pathsInfo(cfg),
+		DSH:                dsh,
+		LocalSnapshots:     localSnapshots,
+		Latest:             latest,
+		Key:                keyInfo,
+		KeyError:           keyErr,
+		Disk:               disk,
+		Schedule:           a.scheduleInfo(cfg),
+		Warnings:           dedupe(warnings),
+		LogsPath:           a.paths.LogsDir,
+		BackupRootIdentity: rootIdentity,
 	}, nil
 }
 
@@ -316,8 +400,13 @@ func (a *App) appInfo(writable bool) AppInfo {
 		Sidecar: ToolInfo{
 			Path:    a.sidecarPath,
 			Version: a.sidecarVersion(),
-			OK:      a.sidecar != nil,
-			Error:   a.sidecarError,
+			OK:      a.sidecar != nil && a.sidecar.Alive(),
+			Error: func() string {
+				if a.sidecar != nil && !a.sidecar.Alive() && a.sidecarError == "" {
+					return "sidecar 已退出"
+				}
+				return a.sidecarError
+			}(),
 		},
 	}
 }
@@ -505,20 +594,35 @@ func (a *App) emitNotice(level, message string) {
 	}
 }
 
-func (a *App) CancelTask() error {
+func (a *App) CancelTask(taskID string) error {
 	a.taskMu.Lock()
 	active := a.active
 	a.taskMu.Unlock()
 	if active == nil {
 		return errors.New("当前没有正在运行的任务")
 	}
+	if taskID != "" && active.ID != taskID {
+		return errors.New("要取消的任务已经结束或被替换")
+	}
 	active.cancel()
 	if a.sidecar != nil {
 		_ = a.sidecar.Cancel(active.ID)
-		_ = a.sidecar.Cancel(active.ID + "-pre")
 	}
 	a.emitProgress(TaskProgress{TaskID: active.ID, Kind: active.Kind, Phase: "cancel", Percent: 0, Message: "正在取消任务"})
 	return nil
+}
+
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func (a *App) runningError(err error) error {

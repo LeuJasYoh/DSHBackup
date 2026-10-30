@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import type { Snapshot } from "../lib/types";
 import { isBusy, store } from "../store";
-import { formatBytes, formatDate, formatRelative, kindShort, restoreBlockReason, statusLabel } from "../lib/format";
+import { formatBytes, formatDate, formatRelative, kindShort, restoreBlockReason, scopeLabel, statusLabel } from "../lib/format";
 
 const props = defineProps<{ snapshots: Snapshot[]; compact?: boolean }>();
 const emit = defineEmits<{ restore: [Snapshot]; verify: [Snapshot]; open: [Snapshot]; deleteLocal: [Snapshot] }>();
 const blocked = (snapshot: Snapshot) => restoreBlockReason(snapshot, store.boot?.key);
 const archiveName = (snapshot: Snapshot) => snapshot.localPath?.split(/[\\/]/).pop() || `dsh-backup-${snapshot.id}.7z`;
 const statusVariant = (snapshot: Snapshot) => {
-  if (snapshot.status === "ready") return "success";
+  if (snapshot.status === "ready") return snapshot.captureStatus === "partial" ? "warning" : "success";
   return snapshot.status === "size-mismatch" ? "warning" : "danger";
 };
+const statusText = (snapshot: Snapshot) => snapshot.captureStatus === "partial" ? "采集不完整" : statusLabel(snapshot.status);
 </script>
 
 <template>
@@ -34,9 +35,9 @@ const statusVariant = (snapshot: Snapshot) => {
             </div>
             <div class="file-sub" :title="formatDate(snapshot.createdAt)">{{ formatRelative(snapshot.createdAt) }} · {{ kindShort(snapshot.kind) }}</div>
           </td>
-          <td>{{ snapshot.desktopIncluded ? "DSH + 桌面" : "仅 DSH" }}</td>
+          <td>{{ scopeLabel(snapshot) }}</td>
           <td class="size-cell">{{ formatBytes(snapshot.size) }}</td>
-          <td><span class="status-pill" :class="statusVariant(snapshot)"><i></i>{{ statusLabel(snapshot.status) }}</span></td>
+          <td><span class="status-pill" :class="statusVariant(snapshot)"><i></i>{{ statusText(snapshot) }}</span></td>
           <td>
             <div class="table-actions">
               <button class="table-action" type="button" :disabled="isBusy || !!blocked(snapshot)" :title="blocked(snapshot) || '校验归档完整性'" aria-label="校验归档" @click="emit('verify', snapshot)">
@@ -48,7 +49,7 @@ const statusVariant = (snapshot: Snapshot) => {
               <button v-if="!props.compact" class="table-action" type="button" :disabled="isBusy || !snapshot.localPath || snapshot.status === 'missing'" title="在资源管理器中打开" aria-label="打开归档位置" @click="emit('open', snapshot)">
                 <svg class="icon"><use href="#i-folder"></use></svg>
               </button>
-              <button v-if="!props.compact" class="table-action danger-link" type="button" :disabled="isBusy" title="删除这份备份" aria-label="删除本地归档" @click="emit('deleteLocal', snapshot)">
+              <button v-if="!props.compact" class="table-action danger-link" type="button" :disabled="isBusy || !!store.pendingSnapshotId" :title="store.pendingSnapshotId ? '请先处理当前的撤销窗口' : '删除这份备份'" aria-label="删除本地归档" @click="emit('deleteLocal', snapshot)">
                 <svg class="icon"><use href="#i-trash"></use></svg>
               </button>
             </div>

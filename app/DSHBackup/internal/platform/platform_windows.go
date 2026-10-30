@@ -30,12 +30,10 @@ func DiskFree(at string) (DiskStatus, error) {
 		}
 		existing = parent
 	}
-	volume := filepath.VolumeName(existing)
-	if volume == "" {
+	if existing == "" {
 		return DiskStatus{}, errors.New("无法确定磁盘卷")
 	}
-	root := volume + `\`
-	pointer, err := windows.UTF16PtrFromString(root)
+	pointer, err := windows.UTF16PtrFromString(existing)
 	if err != nil {
 		return DiskStatus{}, err
 	}

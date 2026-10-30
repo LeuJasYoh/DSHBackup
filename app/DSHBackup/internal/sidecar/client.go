@@ -53,13 +53,20 @@ type Client struct {
 	pending   map[int64]chan callResult
 	eventsMu  sync.Mutex
 	events    map[string]func(Progress)
+	taskRPC   map[string]int64
 	closed    bool
+	alive     atomic.Bool
 	nextID    atomic.Int64
+	jobMu     sync.Mutex
+	job       uintptr
 
 	stderrMu   sync.Mutex
 	stderrTail []string
 	version    string
 }
+
+const protocolVersion = 2
+const cancelGrace = 5 * time.Second
 
 type callResult struct {
 	result json.RawMessage
@@ -106,10 +113,19 @@ func Start(path string, logger *logging.Logger) (*Client, error) {
 		logger:  logger,
 		pending: make(map[int64]chan callResult),
 		events:  make(map[string]func(Progress)),
+		taskRPC: make(map[string]int64),
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("无法启动 Rust sidecar：%w", err)
 	}
+	job, err := attachProcessJob(cmd.Process.Pid)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		return nil, fmt.Errorf("无法把 sidecar 纳入进程作业：%w", err)
+	}
+	client.job = job
+	client.alive.Store(true)
 	go client.readStdout(stdout)
 	go client.readStderr(stderr)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -122,8 +138,16 @@ func Start(path string, logger *logging.Logger) (*Client, error) {
 		_ = client.Close()
 		return nil, fmt.Errorf("sidecar 未响应：%w", err)
 	}
+	if pong.Protocol != protocolVersion {
+		_ = client.Close()
+		return nil, fmt.Errorf("sidecar 协议版本不匹配：应用需要 %d，实际 %d", protocolVersion, pong.Protocol)
+	}
 	client.version = pong.Version
 	return client, nil
+}
+
+func (c *Client) Alive() bool {
+	return c != nil && c.alive.Load()
 }
 
 func (c *Client) Version() string {
@@ -141,6 +165,7 @@ func (c *Client) readStdout(reader io.Reader) {
 			break
 		}
 	}
+	c.alive.Store(false)
 	c.failAll(fmt.Errorf("sidecar 进程已退出%s", c.stderrSuffix()))
 }
 
@@ -234,7 +259,7 @@ func (c *Client) failAll(err error) {
 }
 
 func (c *Client) Call(ctx context.Context, method string, params any, result any) error {
-	return c.call(ctx, method, params, result)
+	return c.call(ctx, "", method, params, result)
 }
 
 func (c *Client) CallTask(ctx context.Context, taskID, method string, params map[string]any, result any, onEvent func(Progress)) error {
@@ -247,6 +272,9 @@ func (c *Client) CallTask(ctx context.Context, taskID, method string, params map
 	params["taskId"] = taskID
 	if onEvent != nil {
 		c.eventsMu.Lock()
+		if c.events == nil {
+			c.events = make(map[string]func(Progress))
+		}
 		c.events[taskID] = onEvent
 		c.eventsMu.Unlock()
 		defer func() {
@@ -255,12 +283,15 @@ func (c *Client) CallTask(ctx context.Context, taskID, method string, params map
 			c.eventsMu.Unlock()
 		}()
 	}
-	return c.call(ctx, method, params, result)
+	return c.call(ctx, taskID, method, params, result)
 }
 
-func (c *Client) call(ctx context.Context, method string, params any, result any) error {
+func (c *Client) call(ctx context.Context, taskID, method string, params any, result any) error {
 	if params == nil {
 		params = map[string]any{}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	id := c.nextID.Add(1)
 	channel := make(chan callResult, 1)
@@ -271,34 +302,108 @@ func (c *Client) call(ctx context.Context, method string, params any, result any
 	}
 	c.pending[id] = channel
 	c.pendingMu.Unlock()
+	if taskID != "" {
+		c.eventsMu.Lock()
+		if c.taskRPC == nil {
+			c.taskRPC = make(map[string]int64)
+		}
+		c.taskRPC[taskID] = id
+		c.eventsMu.Unlock()
+	}
+	finish := func() {
+		c.removePending(id)
+		if taskID != "" {
+			c.eventsMu.Lock()
+			if c.taskRPC[taskID] == id {
+				delete(c.taskRPC, taskID)
+			}
+			c.eventsMu.Unlock()
+		}
+	}
 
 	raw, err := json.Marshal(request{JSONRPC: "2.0", ID: id, Method: method, Params: params})
 	if err != nil {
-		c.removePending(id)
+		finish()
 		return err
 	}
-	c.writeMu.Lock()
-	_, writeErr := c.stdin.Write(append(raw, '\n'))
-	c.writeMu.Unlock()
-	if writeErr != nil {
-		c.removePending(id)
-		return fmt.Errorf("写入 sidecar 失败：%w", writeErr)
+	if writeErr := c.writeFrame(ctx, append(raw, '\n')); writeErr != nil {
+		finish()
+		return writeErr
 	}
 
-	select {
-	case <-ctx.Done():
-		c.removePending(id)
-		return ctx.Err()
-	case response := <-channel:
-		if response.err != nil {
-			return response.err
+	response, err := c.await(ctx, channel)
+	finish()
+	if err != nil {
+		return err
+	}
+	if response.err != nil {
+		return response.err
+	}
+	if result != nil && len(response.result) > 0 {
+		if err := json.Unmarshal(response.result, result); err != nil {
+			return fmt.Errorf("解析 sidecar 响应失败：%w", err)
 		}
-		if result != nil && len(response.result) > 0 {
-			if err := json.Unmarshal(response.result, result); err != nil {
-				return fmt.Errorf("解析 sidecar 响应失败：%w", err)
-			}
+	}
+	return nil
+}
+
+func (c *Client) writeFrame(ctx context.Context, frame []byte) error {
+	done := make(chan error, 1)
+	go func() {
+		c.writeMu.Lock()
+		_, err := c.stdin.Write(frame)
+		c.writeMu.Unlock()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("写入 sidecar 失败：%w", err)
 		}
 		return nil
+	case <-ctx.Done():
+		select {
+		case err := <-done:
+			if err != nil {
+				return fmt.Errorf("写入 sidecar 失败：%w", err)
+			}
+			// The frame was sent; let await wait for the terminal response.
+			return nil
+		case <-time.After(20 * time.Millisecond):
+		}
+		c.abort(fmt.Errorf("等待写入期间任务已取消"))
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		return ctx.Err()
+	case <-time.After(10 * time.Second):
+		c.abort(fmt.Errorf("写入 sidecar 超时"))
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		return errors.New("写入 sidecar 超时，连接已终止")
+	}
+}
+
+func (c *Client) await(ctx context.Context, channel chan callResult) (callResult, error) {
+	select {
+	case response := <-channel:
+		return response, nil
+	case <-ctx.Done():
+		select {
+		case response := <-channel:
+			return response, nil
+		case <-time.After(cancelGrace):
+			c.abort(fmt.Errorf("取消未获确认，已终止 sidecar"))
+			select {
+			case response := <-channel:
+				return response, nil
+			case <-time.After(2 * time.Second):
+				return callResult{}, errors.New("取消未获确认，sidecar 已终止；任务结果不确定")
+			}
+		}
 	}
 }
 
@@ -309,12 +414,40 @@ func (c *Client) removePending(id int64) {
 }
 
 func (c *Client) Cancel(taskID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	c.eventsMu.Lock()
+	id, active := c.taskRPC[taskID]
+	c.eventsMu.Unlock()
+	if !active {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var result struct {
 		Cancelled bool `json:"cancelled"`
 	}
-	return c.Call(ctx, "cancel", map[string]any{"taskId": taskID}, &result)
+	return c.Call(ctx, "cancel", map[string]any{"requestId": id, "taskId": taskID}, &result)
+}
+
+func (c *Client) abort(reason error) {
+	c.pendingMu.Lock()
+	if c.closed {
+		c.pendingMu.Unlock()
+		return
+	}
+	c.closed = true
+	c.pendingMu.Unlock()
+	c.alive.Store(false)
+	_ = c.stdin.Close()
+	c.jobMu.Lock()
+	job := c.job
+	c.job = 0
+	c.jobMu.Unlock()
+	terminateProcessJob(job)
+	if c.cmd != nil && c.cmd.Process != nil {
+		_ = c.cmd.Process.Kill()
+	}
+	closeProcessJob(job)
+	c.failAll(reason)
 }
 
 func (c *Client) Close() error {
@@ -325,18 +458,25 @@ func (c *Client) Close() error {
 	}
 	c.closed = true
 	c.pendingMu.Unlock()
+	c.alive.Store(false)
 	_ = c.stdin.Close()
 	done := make(chan struct{})
 	go func() {
 		_ = c.cmd.Wait()
 		close(done)
 	}()
+	c.jobMu.Lock()
+	job := c.job
+	c.job = 0
+	c.jobMu.Unlock()
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
+		terminateProcessJob(job)
 		_ = c.cmd.Process.Kill()
 		<-done
 	}
+	closeProcessJob(job)
 	c.failAll(errors.New("sidecar 已关闭"))
 	return nil
 }
@@ -366,17 +506,19 @@ func (c *Client) HashFile(ctx context.Context, path string) (HashResult, error) 
 }
 
 type KeyInfo struct {
-	Exists      bool   `json:"exists"`
-	Generated   bool   `json:"generated"`
-	PublicKey   string `json:"publicKey"`
-	KeyID       string `json:"keyId"`
-	PrivatePath string `json:"privatePath"`
-	Error       string `json:"error,omitempty"`
+	Exists          bool   `json:"exists"`
+	CanEncrypt      bool   `json:"canEncrypt"`
+	Generated       bool   `json:"generated"`
+	PublicKey       string `json:"publicKey"`
+	KeyID           string `json:"keyId"`
+	PrivatePath     string `json:"privatePath"`
+	Error           string `json:"error,omitempty"`
+	EncryptionError string `json:"encryptionError,omitempty"`
 }
 
-func (c *Client) KeysEnsure(ctx context.Context, dir string) (KeyInfo, error) {
+func (c *Client) KeysEnsure(ctx context.Context, dir string, allowCreate bool) (KeyInfo, error) {
 	var result KeyInfo
-	err := c.Call(ctx, "keys_ensure", map[string]any{"dir": dir}, &result)
+	err := c.Call(ctx, "keys_ensure", map[string]any{"dir": dir, "allowCreate": allowCreate}, &result)
 	return result, err
 }
 
@@ -419,14 +561,23 @@ type StageRoot struct {
 	ExcludeRel []string `json:"excludeRel"`
 }
 
+type ArchiveEntry struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	Folder bool   `json:"folder"`
+}
+
 type StageResult struct {
-	Files      int64    `json:"files"`
-	Bytes      int64    `json:"bytes"`
-	TotalBytes int64    `json:"totalBytes"`
-	Hardlinked int64    `json:"hardlinked"`
-	Skipped    int64    `json:"skipped"`
-	Warnings   []string `json:"warnings"`
-	StagingDir string   `json:"stagingDir"`
+	Files       int64          `json:"files"`
+	Directories int64          `json:"directories"`
+	Bytes       int64          `json:"bytes"`
+	TotalBytes  int64          `json:"totalBytes"`
+	Hardlinked  int64          `json:"hardlinked"`
+	Skipped     int64          `json:"skipped"`
+	Complete    bool           `json:"complete"`
+	Warnings    []string       `json:"warnings"`
+	Entries     []ArchiveEntry `json:"entries"`
+	StagingDir  string         `json:"stagingDir"`
 }
 
 func (c *Client) Stage(ctx context.Context, taskID, stagingDir string, roots []StageRoot, onEvent func(Progress)) (StageResult, error) {
@@ -476,9 +627,10 @@ func (c *Client) Backup(ctx context.Context, taskID string, req BackupRequest, o
 }
 
 type ListResult struct {
-	Entries []string `json:"entries"`
-	Files   int64    `json:"files"`
-	Bytes   int64    `json:"bytes"`
+	Entries []string       `json:"entries"`
+	Details []ArchiveEntry `json:"details"`
+	Files   int64          `json:"files"`
+	Bytes   int64          `json:"bytes"`
 }
 
 func (c *Client) ListArchive(ctx context.Context, sevenZip, archive, password string) (ListResult, error) {

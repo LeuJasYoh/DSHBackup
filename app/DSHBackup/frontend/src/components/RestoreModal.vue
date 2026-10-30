@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useModalFocus } from "../lib/modalFocus";
 import { askConfirm, isBusy, pickDirectory, snapshots, startRestore, store } from "../store";
-import { errorMessage, formatBytes, formatDate, isAbsoluteDirectory, restoreBlockReason, statusLabel } from "../lib/format";
+import { errorMessage, formatBytes, formatDate, isAbsoluteDirectory, restoreBlockReason, scopeLabel, statusLabel } from "../lib/format";
 import type { RestoreRequest } from "../lib/types";
 
 const selectedId = ref(store.restorePreselect || snapshots.value[0]?.id || "");
@@ -14,7 +14,8 @@ const submitting = ref(false);
 const browsing = ref(false);
 const failure = ref("");
 const card = ref<HTMLElement | null>(null);
-const locked = computed(() => submitting.value || browsing.value || isBusy.value);
+const locked = computed(() => submitting.value || browsing.value);
+const busy = computed(() => isBusy.value);
 function close() { if (!locked.value) store.modals.restore = false; }
 useModalFocus(card, close);
 const selected = computed(() => snapshots.value.find((snapshot) => snapshot.id === selectedId.value));
@@ -26,6 +27,7 @@ const blocked = computed(() => restoreBlockReason(selected.value, store.boot?.ke
 const archiveName = computed(() => selected.value?.localPath?.split(/[\\/]/).pop() || (selected.value ? `dsh-backup-${selected.value.id}.7z` : "选择一份归档"));
 const targetError = computed(() => {
   if (!isAbsoluteDirectory(target.value)) return "请选择有效的 Windows 绝对目录。";
+  if (targetMode.value === "custom" && selected.value?.scope?.length && !selected.value.scope.includes("dsh")) return "该归档不包含 DSH 核心数据，不能恢复到其他目录。";
   const normalize = (path: string) => path.replaceAll("/", "\\").replace(/\\+$/, "").toLowerCase();
   if (targetMode.value === "custom" && normalize(target.value) === normalize(defaultTarget.value)) return "所选目录是当前数据目录。请选择其他目录，或切换为“覆盖当前数据”。";
   return "";
@@ -85,7 +87,7 @@ async function submit() {
           <span>恢复会覆盖目标中的现有数据。请先关闭 DSH；{{ store.boot?.dsh.running ? "当前检测到 DSH 正在运行。" : "恢复完成后重新启动 DSH。" }}</span>
         </div>
 
-        <fieldset class="form-fieldset" :disabled="locked">
+        <fieldset class="form-fieldset" :disabled="locked || busy">
           <div class="field-block" style="margin-top: 0">
             <label class="field-label" for="restoreSnapshot">来源归档</label>
             <select id="restoreSnapshot" v-model="selectedId" autofocus class="text-input select-input"><option v-for="snapshot in snapshots" :key="snapshot.id" :value="snapshot.id">{{ formatDate(snapshot.createdAt) }} · {{ formatBytes(snapshot.size) }} · {{ statusLabel(snapshot.status) }}</option></select>
@@ -95,7 +97,7 @@ async function submit() {
           <div v-if="selected" class="summary-grid">
             <div class="summary-cell"><span class="k">归档大小</span><span class="v">{{ formatBytes(selected.size) }}</span></div>
             <div class="summary-cell"><span class="k">创建时间</span><span class="v">{{ formatDate(selected.createdAt) }}</span></div>
-            <div class="summary-cell"><span class="k">备份范围</span><span class="v">{{ selected.desktopIncluded ? "DSH + 桌面" : "仅 DSH" }}</span></div>
+            <div class="summary-cell"><span class="k">备份范围</span><span class="v">{{ scopeLabel(selected) }}</span></div>
             <div class="summary-cell"><span class="k">完整性</span><span class="v" :style="{ color: selected.status === 'ready' ? 'var(--green)' : selected.status === 'size-mismatch' ? 'var(--amber)' : 'var(--red)' }">{{ statusLabel(selected.status) }}</span></div>
           </div>
 
@@ -103,12 +105,12 @@ async function submit() {
             <div class="field-label">恢复方式</div>
             <div class="radio-list" role="radiogroup" aria-label="恢复方式">
               <label class="radio-card" :class="{ 'is-active': targetMode === 'default' }">
-                <input v-model="targetMode" type="radio" value="default" />
+                <input v-model="targetMode" type="radio" name="restore-mode" value="default" />
                 <span class="radio-dot"></span>
                 <span class="radio-copy"><strong>覆盖当前 DSH 数据</strong><span>恢复到当前数据目录；若归档包含桌面登录态，可一并恢复。</span></span>
               </label>
               <label class="radio-card" :class="{ 'is-active': targetMode === 'custom' }">
-                <input v-model="targetMode" type="radio" value="custom" />
+                <input v-model="targetMode" type="radio" name="restore-mode" value="custom" />
                 <span class="radio-dot"></span>
                 <span class="radio-copy"><strong>恢复到其他目录</strong><span>不影响当前数据；自定义目录不会包含系统桌面登录态。</span></span>
               </label>
@@ -137,11 +139,12 @@ async function submit() {
         </fieldset>
       </div>
       <div class="modal-bottom">
+        <p v-if="busy" class="hint" role="status">有任务正在进行；恢复提交已暂停，仍可关闭此窗口。</p>
         <p v-if="blocked || (targetMode === 'custom' && targetError)" class="inline-error" role="alert">{{ blocked || targetError }}</p>
         <p v-if="failure" class="inline-error" role="alert">{{ failure }}</p>
         <div class="modal-footer">
           <button class="btn btn-ghost" type="button" :disabled="locked" @click="close">取消</button>
-          <button class="btn btn-danger" type="button" :disabled="locked || !!blocked || !!targetError" @click="submit">{{ submitting || store.startingTask ? "正在启动…" : "开始恢复" }}</button>
+          <button class="btn btn-danger" type="button" :disabled="locked || busy || !!blocked || !!targetError" @click="submit">{{ submitting || store.startingTask ? "正在启动…" : "开始恢复" }}</button>
         </div>
       </div>
     </div>

@@ -111,6 +111,9 @@ func TestEncryptedBackupVerifyRestore(t *testing.T) {
 	if result.Manifest.DesktopIncluded != true {
 		t.Fatal("desktop should be included")
 	}
+	if result.Snapshot.Compression != "store" {
+		t.Fatalf("default backup should use store compression, got %q", result.Snapshot.Compression)
+	}
 	if result.Snapshot.KeyID == "" {
 		t.Fatal("key id missing")
 	}

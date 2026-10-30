@@ -1,6 +1,8 @@
 use crate::error::{Result, SidecarError};
 use crate::protocol::Emitter;
-use crate::util::{ensure_dir, is_reparse_point, link_or_copy};
+use crate::util::{
+    ensure_dir, ensure_no_reparse_chain, is_reparse_point, replace_file, stable_copy,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -33,17 +35,22 @@ struct PlannedFile {
     size: u64,
 }
 
-pub fn stage(
-    request: StageRequest,
-    token: &AtomicBool,
-    emitter: &Emitter,
-) -> Result<Value> {
+struct PlannedDir {
+    relative: PathBuf,
+}
+
+fn slash_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Result<Value> {
     ensure_dir(&request.staging_dir)?;
     if std::fs::read_dir(&request.staging_dir)?.next().is_some() {
         return Err(SidecarError::new("暂存目录不是空目录，已拒绝写入"));
     }
 
     let mut files: Vec<PlannedFile> = Vec::new();
+    let mut dirs: Vec<PlannedDir> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut total_bytes = 0u64;
     let mut skipped = 0usize;
@@ -51,19 +58,28 @@ pub fn stage(
     emitter.progress("stage", 0.0, "正在扫描源文件", Some(0), None);
 
     for root in &request.roots {
-        if !root.name.is_empty()
-            && root.name != "dsh"
-            && root.name != "desktop-state"
-        {
-            return Err(SidecarError::new(format!("不支持的备份范围：{}", root.name)));
-        }
-        if !root.source.exists() {
+        if !root.name.is_empty() && root.name != "dsh" && root.name != "desktop-state" {
             return Err(SidecarError::new(format!(
-                "备份源不存在：{}",
-                root.source.display()
+                "不支持的备份范围：{}",
+                root.name
             )));
         }
-        if !root.source.is_dir() {
+        let source_meta = match std::fs::symlink_metadata(&root.source) {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SidecarError::new(format!(
+                    "备份源不存在：{}",
+                    root.source.display()
+                )))
+            }
+            Err(error) => {
+                return Err(SidecarError::new(format!(
+                    "无法读取备份源 {}：{error}",
+                    root.source.display()
+                )))
+            }
+        };
+        if !source_meta.is_dir() {
             return Err(SidecarError::new(format!(
                 "备份源不是目录：{}",
                 root.source.display()
@@ -81,6 +97,7 @@ pub fn stage(
             .map(|value| value.replace('\\', "/").to_ascii_lowercase())
             .collect();
 
+        let mut filtered_reparse = 0usize;
         let walker = WalkDir::new(&root.source)
             .follow_links(false)
             .into_iter()
@@ -109,7 +126,11 @@ pub fn stage(
                     return false;
                 }
                 match entry.metadata() {
-                    Ok(meta) => !is_reparse_point(&meta),
+                    Ok(meta) if is_reparse_point(&meta) => {
+                        filtered_reparse += 1;
+                        false
+                    }
+                    Ok(_) => true,
                     Err(_) => true,
                 }
             });
@@ -134,24 +155,36 @@ pub fn stage(
                 .strip_prefix(&root.source)
                 .map_err(|_| SidecarError::new("无法计算相对路径"))?
                 .to_path_buf();
-            if entry.file_type().is_dir() {
-                continue;
-            }
-            if entry.file_type().is_symlink() {
-                skipped += 1;
-                continue;
-            }
+            let named_relative = if root.name.is_empty() {
+                relative
+            } else {
+                PathBuf::from(&root.name).join(&relative)
+            };
             let meta = match entry.metadata() {
                 Ok(value) => value,
                 Err(error) => {
                     warnings.push(format!(
                         "无法读取文件信息 {}：{error}",
-                        relative.display()
+                        named_relative.display()
                     ));
                     skipped += 1;
                     continue;
                 }
             };
+            if is_reparse_point(&meta) {
+                warnings.push(format!(
+                    "已跳过链接或重解析点：{}",
+                    named_relative.display()
+                ));
+                skipped += 1;
+                continue;
+            }
+            if meta.is_dir() {
+                dirs.push(PlannedDir {
+                    relative: named_relative,
+                });
+                continue;
+            }
             if !meta.is_file() {
                 skipped += 1;
                 continue;
@@ -159,42 +192,61 @@ pub fn stage(
             total_bytes += meta.len();
             files.push(PlannedFile {
                 source: entry.path().to_path_buf(),
-                relative: if root.name.is_empty() {
-                    relative
-                } else {
-                    PathBuf::from(&root.name).join(relative)
-                },
+                relative: named_relative,
                 size: meta.len(),
             });
+        }
+        if filtered_reparse > 0 {
+            warnings.push(format!(
+                "备份源中跳过了 {filtered_reparse} 个链接或重解析点"
+            ));
+            skipped += filtered_reparse;
         }
     }
 
     emitter.progress(
         "stage",
         2.0,
-        &format!("准备写入 {} 个文件", files.len()),
+        &format!("准备写入 {} 个文件、{} 个目录", files.len(), dirs.len()),
         Some(0),
         Some(total_bytes),
     );
 
     let mut staged_bytes = 0u64;
     let mut staged_files = 0u64;
-    let mut hardlinked = 0u64;
     let mut last_emit = Instant::now() - Duration::from_secs(1);
     let mut last_percent = 0.0f64;
+
+    for dir in &dirs {
+        let destination = request.staging_dir.join(&dir.relative);
+        if let Err(error) = ensure_dir(&destination) {
+            warnings.push(format!(
+                "目录未能暂存：{}（{error}）",
+                dir.relative.display()
+            ));
+            skipped += 1;
+        }
+    }
 
     for file in &files {
         if token.load(Ordering::Relaxed) {
             return Err(SidecarError::cancelled());
         }
         let destination = request.staging_dir.join(&file.relative);
-        match link_or_copy(&file.source, &destination) {
-            Ok(linked) => {
-                if linked {
-                    hardlinked += 1;
-                }
-                staged_bytes += file.size;
+        match stable_copy(&file.source, &destination, token) {
+            Ok(size) if size == file.size => {
+                staged_bytes += size;
                 staged_files += 1;
+            }
+            Ok(size) => {
+                let _ = std::fs::remove_file(&destination);
+                warnings.push(format!(
+                    "文件在暂存期间发生变化（预期 {} 字节，实际 {} 字节），已跳过：{}",
+                    file.size,
+                    size,
+                    file.relative.display()
+                ));
+                skipped += 1;
             }
             Err(error) => {
                 warnings.push(format!(
@@ -223,7 +275,6 @@ pub fn stage(
         }
     }
 
-    // 复核暂存目录里没有链接或重解析点。
     for entry in WalkDir::new(&request.staging_dir)
         .follow_links(false)
         .into_iter()
@@ -243,6 +294,33 @@ pub fn stage(
         }
     }
 
+    let mut entries: Vec<Value> = Vec::new();
+    for dir in &dirs {
+        if request.staging_dir.join(&dir.relative).is_dir() {
+            entries.push(json!({
+                "path": slash_path(&dir.relative),
+                "size": 0,
+                "folder": true,
+            }));
+        }
+    }
+    for file in &files {
+        let destination = request.staging_dir.join(&file.relative);
+        if let Ok(meta) = std::fs::metadata(&destination) {
+            entries.push(json!({
+                "path": slash_path(&file.relative),
+                "size": meta.len(),
+                "folder": false,
+            }));
+        }
+    }
+    entries.sort_by(|left, right| {
+        left["path"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["path"].as_str().unwrap_or_default())
+    });
+
     emitter.progress(
         "stage",
         10.0,
@@ -253,11 +331,14 @@ pub fn stage(
 
     Ok(json!({
         "files": staged_files,
+        "directories": dirs.len(),
         "bytes": staged_bytes,
         "totalBytes": total_bytes,
-        "hardlinked": hardlinked,
+        "hardlinked": 0,
         "skipped": skipped,
+        "complete": skipped == 0 && warnings.is_empty(),
         "warnings": warnings,
+        "entries": entries,
         "stagingDir": request.staging_dir.to_string_lossy(),
     }))
 }
@@ -270,52 +351,66 @@ pub fn install_staging(
 ) -> Result<Value> {
     let mut total_files = 0u64;
     let mut total_bytes = 0u64;
-    for (name, _staging_root) in targets {
+    for (name, _target) in targets {
         let root = staging_dir.join(name);
         if !root.exists() {
             continue;
         }
-        for entry in WalkDir::new(&root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(std::result::Result::ok)
-        {
+        for entry in WalkDir::new(&root).follow_links(false) {
+            let entry = entry
+                .map_err(|error| SidecarError::new(format!("无法扫描恢复暂存内容：{error}")))?;
             if entry.file_type().is_file() {
-                if let Ok(meta) = entry.metadata() {
-                    total_files += 1;
-                    total_bytes += meta.len();
-                }
+                let meta = entry.metadata().map_err(|error| {
+                    SidecarError::new(format!(
+                        "无法读取恢复暂存文件 {}：{error}",
+                        entry.path().display()
+                    ))
+                })?;
+                total_files += 1;
+                total_bytes += meta.len();
             }
         }
     }
 
     let mut copied_files = 0u64;
     let mut copied_bytes = 0u64;
+    let mut copied_dirs = 0u64;
     let mut last_emit = Instant::now() - Duration::from_secs(1);
-    let mut warnings: Vec<String> = Vec::new();
+    let warnings: Vec<String> = Vec::new();
 
     for (name, target) in targets {
+        if name != "dsh" && name != "desktop-state" {
+            return Err(SidecarError::new(format!("不支持的恢复范围：{name}")));
+        }
         let root = staging_dir.join(name);
         if !root.exists() {
             continue;
         }
+        if let Ok(meta) = std::fs::symlink_metadata(target) {
+            if !is_reparse_point(&meta) && !meta.is_dir() {
+                return Err(SidecarError::new(format!(
+                    "恢复目标不是目录：{}",
+                    target.display()
+                )));
+            }
+        }
         ensure_dir(target)?;
-        for entry in WalkDir::new(&root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(std::result::Result::ok)
-        {
+        for entry in WalkDir::new(&root).follow_links(false) {
             if token.load(Ordering::Relaxed) {
                 return Err(SidecarError::cancelled());
             }
+            let entry = entry
+                .map_err(|error| SidecarError::new(format!("无法扫描恢复暂存内容：{error}")))?;
             if entry.depth() == 0 {
                 continue;
             }
             let meta = match entry.metadata() {
                 Ok(value) => value,
                 Err(error) => {
-                    warnings.push(format!("无法读取 {}：{error}", entry.path().display()));
-                    continue;
+                    return Err(SidecarError::new(format!(
+                        "无法读取暂存文件 {}：{error}",
+                        entry.path().display()
+                    )))
                 }
             };
             if is_reparse_point(&meta) {
@@ -329,17 +424,21 @@ pub fn install_staging(
                 .strip_prefix(&root)
                 .map_err(|_| SidecarError::new("无法计算恢复相对路径"))?;
             let destination = target.join(relative);
+
             if meta.is_dir() {
+                ensure_no_reparse_chain(target, relative)?;
                 ensure_dir(&destination)?;
+                copied_dirs += 1;
                 continue;
+            } else if !meta.is_file() {
+                return Err(SidecarError::new(format!(
+                    "恢复暂存中出现不支持的文件类型：{}",
+                    relative.display()
+                )));
             }
-            if !meta.is_file() {
-                continue;
-            }
-            if let Some(parent) = destination.parent() {
-                ensure_dir(parent)?;
-            }
-            match crate::util::copy_file_preserve(entry.path(), &destination) {
+
+            ensure_no_reparse_chain(target, relative.parent().unwrap_or(Path::new("")))?;
+            match replace_file(entry.path(), &destination, token) {
                 Ok(()) => {
                     copied_files += 1;
                     copied_bytes += meta.len();
@@ -371,6 +470,7 @@ pub fn install_staging(
 
     Ok(json!({
         "files": copied_files,
+        "directories": copied_dirs,
         "bytes": copied_bytes,
         "totalFiles": total_files,
         "warnings": warnings,

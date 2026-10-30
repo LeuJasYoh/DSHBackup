@@ -7,7 +7,7 @@ const done = ref(false);
 let timer: ReturnType<typeof setTimeout> | null = null;
 
 async function copy() {
-  await copyText(props.value, "已复制到剪贴板");
+  if (!(await copyText(props.value, "已复制到剪贴板"))) return;
   done.value = true;
   if (timer) clearTimeout(timer);
   timer = setTimeout(() => { done.value = false; }, 1500);

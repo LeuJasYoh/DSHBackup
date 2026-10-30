@@ -17,6 +17,9 @@ func TestValidateDefaults(t *testing.T) {
 	if !cfg.UpdateCheck {
 		t.Fatal("default config should check for updates")
 	}
+	if cfg.Compression.Level != "store" {
+		t.Fatalf("default compression should be store, got %s", cfg.Compression.Level)
+	}
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("default config should be valid: %v", err)
 	}
@@ -67,6 +70,40 @@ func TestNextRun(t *testing.T) {
 	}
 }
 
+func TestDueOccurrenceHandlesFirstAndStaleWatermarks(t *testing.T) {
+	cfg := Default(t.TempDir())
+	cfg.Schedule = Schedule{Kind: ScheduleDaily, Time: "03:00", Weekday: 1}
+	loc := time.FixedZone("CST", 8*3600)
+	last := time.Date(2026, 10, 29, 3, 0, 0, 0, loc)
+	now := time.Date(2026, 10, 30, 10, 0, 0, 0, loc)
+	due, ok := cfg.DueOccurrence(now, last)
+	if !ok || due.Day() != 30 || due.Hour() != 3 {
+		t.Fatalf("latest missed occurrence was not selected: %v %v", due, ok)
+	}
+	if _, ok := cfg.DueOccurrence(now, now); ok {
+		t.Fatal("already handled occurrence became due again")
+	}
+	if _, ok := cfg.DueOccurrence(now, time.Time{}); ok {
+		t.Fatal("an unarmed schedule must not run immediately")
+	}
+}
+
+func TestWeeklyDueUsesConfiguredWeekday(t *testing.T) {
+	cfg := Default(t.TempDir())
+	cfg.Schedule = Schedule{Kind: ScheduleWeekly, Time: "03:00", Weekday: int(time.Friday)}
+	loc := time.FixedZone("CST", 8*3600)
+	last := time.Date(2026, 10, 24, 3, 0, 0, 0, loc) // previous Saturday
+	now := time.Date(2026, 10, 30, 10, 0, 0, 0, loc) // Friday
+	due, ok := cfg.DueOccurrence(now, last)
+	if !ok || due.Weekday() != time.Friday || due.Day() != 30 {
+		t.Fatalf("weekly due did not use configured Friday: %v %v", due, ok)
+	}
+	next, ok := cfg.NextRunAfter(last)
+	if !ok || next.Weekday() != time.Friday || !next.After(now) {
+		t.Fatalf("weekly next run did not use configured Friday: %v %v", next, ok)
+	}
+}
+
 func TestLoadWithoutVisualPreferencesDefaultsToSystem(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -87,6 +124,30 @@ func TestLoadWithoutVisualPreferencesDefaultsToSystem(t *testing.T) {
 	}
 	if loaded.Theme != ThemeSystem || !loaded.UpdateCheck {
 		t.Fatalf("legacy config should default to system theme and update checks: %+v", loaded)
+	}
+}
+
+func TestLegacyMXMigratesToStorePreset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := Default(filepath.Join(dir, "backups"))
+	cfg.Compression = Compression{Level: "balanced", ExtraArgs: []string{"-mfb=64", "-mx=0"}}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path, filepath.Join(dir, "backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Compression.Level != "store" {
+		t.Fatalf("-mx=0 did not migrate to store: %s", loaded.Compression.Level)
+	}
+	if len(loaded.Compression.ExtraArgs) != 1 || loaded.Compression.ExtraArgs[0] != "-mfb=64" {
+		t.Fatalf("legacy -mx was not removed: %v", loaded.Compression.ExtraArgs)
 	}
 }
 

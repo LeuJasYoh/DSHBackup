@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$Version = "1.2.1",
+    [string]$Version = "1.2.3",
     [switch]$SkipFrontendInstall,
     [switch]$SkipZip
 )
@@ -52,7 +52,10 @@ $wails = Resolve-Wails
 if (-not $SkipFrontendInstall -and -not (Test-Path (Join-Path $appRoot "frontend\node_modules"))) {
     Write-Step "安装前端依赖"
     Push-Location (Join-Path $appRoot "frontend")
-    try { npm install } finally { Pop-Location }
+    try {
+        npm install
+        if ($LASTEXITCODE -ne 0) { throw "npm install 失败" }
+    } finally { Pop-Location }
 }
 
 Write-Step "构建 Rust sidecar (release, static CRT)"
@@ -76,34 +79,30 @@ try {
 $appExe = Join-Path $appRoot "build\bin\DSHBackup.exe"
 if (-not (Test-Path $appExe)) { throw "找不到 Wails 输出：$appExe" }
 
-Write-Step "组装便携版目录（不带上旧的 data 和 backups）"
-New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-foreach ($stale in @("data", "backups")) {
-    $stalePath = Join-Path $outDir $stale
-    if (Test-Path $stalePath) { Remove-Item -Recurse -Force $stalePath }
-}
-New-Item -ItemType Directory -Force -Path (Join-Path $outDir "tools") | Out-Null
+Write-Step "在干净暂存目录组装便携版"
+$stageDir = Join-Path $distRoot (".build-DSHBackup-" + [guid]::NewGuid().ToString("N"))
+try {
+    New-Item -ItemType Directory -Force -Path (Join-Path $stageDir "tools") | Out-Null
+    Copy-Item $appExe (Join-Path $stageDir "DSHBackup.exe")
+    Copy-Item $sidecarPath (Join-Path $stageDir "dsh-backup-core.exe")
+    Copy-Item $sevenZipSource (Join-Path $stageDir "tools\7za.exe")
+    if (Test-Path $sevenZipLicense) {
+        Copy-Item $sevenZipLicense (Join-Path $stageDir "tools\License.txt")
+    } else {
+        throw "找不到 7-Zip License.txt：$sevenZipLicense"
+    }
 
-Copy-Item $appExe (Join-Path $outDir "DSHBackup.exe")
-Copy-Item $sidecarPath (Join-Path $outDir "dsh-backup-core.exe")
-Copy-Item $sevenZipSource (Join-Path $outDir "tools\7za.exe")
-if (Test-Path $sevenZipLicense) {
-    Copy-Item $sevenZipLicense (Join-Path $outDir "tools\License.txt")
-} else {
-    throw "找不到 7-Zip License.txt：$sevenZipLicense"
-}
+    $icon = Join-Path $appRoot "build\windows\icon.ico"
+    if (Test-Path $icon) { Copy-Item $icon (Join-Path $stageDir "icon.ico") }
 
-$icon = Join-Path $appRoot "build\windows\icon.ico"
-if (Test-Path $icon) { Copy-Item $icon (Join-Path $outDir "icon.ico") }
+    $packaging = Join-Path $appRoot "packaging"
+    Copy-Item (Join-Path $packaging "README.txt") (Join-Path $stageDir "README.txt")
+    Copy-Item (Join-Path $packaging "THIRD_PARTY_NOTICES.txt") (Join-Path $stageDir "THIRD_PARTY_NOTICES.txt")
+    Copy-Item (Join-Path $packaging "7-Zip-SOURCE.txt") (Join-Path $stageDir "7-Zip-SOURCE.txt")
 
-$packaging = Join-Path $appRoot "packaging"
-Copy-Item (Join-Path $packaging "README.txt") (Join-Path $outDir "README.txt")
-Copy-Item (Join-Path $packaging "THIRD_PARTY_NOTICES.txt") (Join-Path $outDir "THIRD_PARTY_NOTICES.txt")
-Copy-Item (Join-Path $packaging "7-Zip-SOURCE.txt") (Join-Path $outDir "7-Zip-SOURCE.txt")
-
-$sidecarHash = (Get-FileHash -Algorithm SHA256 (Join-Path $outDir "dsh-backup-core.exe")).Hash.ToLowerInvariant()
-$exeHash = (Get-FileHash -Algorithm SHA256 (Join-Path $outDir "DSHBackup.exe")).Hash.ToLowerInvariant()
-$buildInfo = @"
+    $sidecarHash = (Get-FileHash -Algorithm SHA256 (Join-Path $stageDir "dsh-backup-core.exe")).Hash.ToLowerInvariant()
+    $exeHash = (Get-FileHash -Algorithm SHA256 (Join-Path $stageDir "DSHBackup.exe")).Hash.ToLowerInvariant()
+    $buildInfo = @"
 DSH Backup $Version
 Build time (UTC): $buildTime
 Platform: windows/amd64
@@ -111,19 +110,27 @@ Platform: windows/amd64
 DSHBackup.exe SHA-256: $exeHash
 dsh-backup-core.exe SHA-256: $sidecarHash
 "@
-Set-Content -Encoding UTF8 -Path (Join-Path $outDir "BUILD.txt") -Value $buildInfo
+    Set-Content -Encoding UTF8 -Path (Join-Path $stageDir "BUILD.txt") -Value $buildInfo
 
-Write-Step "验证 7za 独立运行"
-$probe = & (Join-Path $outDir "tools\7za.exe") i
-if ($LASTEXITCODE -ne 0) { throw "复制后的 7za.exe 无法运行；可能需要同时复制 7za.dll" }
-$probe | Select-Object -First 2
+    Write-Step "验证复制后的 7za 独立运行"
+    $probe = & (Join-Path $stageDir "tools\7za.exe") i
+    if ($LASTEXITCODE -ne 0) { throw "复制后的 7za.exe 无法运行" }
+    $probe | Select-Object -First 2
 
-if (-not $SkipZip) {
-    Write-Step "生成 ZIP"
-    $zipPath = Join-Path $distRoot "DSHBackup-$Version-win64.zip"
-    if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
-    Compress-Archive -Path $outDir -DestinationPath $zipPath -CompressionLevel Optimal
-    Write-Host "ZIP: $zipPath" -ForegroundColor Green
+    Write-Step "更新便携目录的运行文件（保留 data 和 backups）"
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $outDir "tools") | Out-Null
+    Copy-Item (Join-Path $stageDir "*") $outDir -Recurse -Force
+
+    if (-not $SkipZip) {
+        Write-Step "从干净暂存目录生成 ZIP"
+        $zipPath = Join-Path $distRoot "DSHBackup-$Version-win64.zip"
+        if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+        Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
+        Write-Host "ZIP: $zipPath" -ForegroundColor Green
+    }
+} finally {
+    if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
 }
 
 Write-Host ""

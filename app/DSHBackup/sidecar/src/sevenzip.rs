@@ -100,11 +100,7 @@ pub fn check(request: CheckRequest) -> Result<Value> {
     }))
 }
 
-pub fn backup(
-    request: BackupRequest,
-    token: &AtomicBool,
-    emitter: &Emitter,
-) -> Result<Value> {
+pub fn backup(request: BackupRequest, token: &AtomicBool, emitter: &Emitter) -> Result<Value> {
     ensure_dir(&request.staging_dir)?;
     if !request.staging_dir.is_dir() {
         return Err(SidecarError::new("暂存目录不存在"));
@@ -118,16 +114,17 @@ pub fn backup(
         if entry.depth() == 0 {
             continue;
         }
-        if entry.file_type().is_dir() {
-            continue;
-        }
-        if let Ok(meta) = entry.metadata() {
-            if is_reparse_point(&meta) {
-                return Err(SidecarError::new(format!(
-                    "暂存目录中出现链接，已拒绝压缩：{}",
-                    entry.path().display()
-                )));
-            }
+        let meta = entry.metadata().map_err(|error| {
+            SidecarError::new(format!(
+                "无法读取暂存目录项目 {}：{error}",
+                entry.path().display()
+            ))
+        })?;
+        if is_reparse_point(&meta) {
+            return Err(SidecarError::new(format!(
+                "暂存目录中出现链接，已拒绝压缩：{}",
+                entry.path().display()
+            )));
         }
         let relative = entry
             .path()
@@ -135,6 +132,24 @@ pub fn backup(
             .map_err(|_| SidecarError::new("无法计算归档相对路径"))?;
         let normalized = relative.to_string_lossy().replace('/', "\\");
         validate_archive_path(&normalized)?;
+        if entry.file_type().is_dir() {
+            let mut children = std::fs::read_dir(entry.path()).map_err(|error| {
+                SidecarError::new(format!(
+                    "无法读取暂存目录 {}：{error}",
+                    entry.path().display()
+                ))
+            })?;
+            if children.next().is_none() {
+                list_entries.push(normalized);
+            }
+            continue;
+        }
+        if !meta.is_file() {
+            return Err(SidecarError::new(format!(
+                "暂存目录中出现不支持的文件类型：{}",
+                entry.path().display()
+            )));
+        }
         list_entries.push(normalized);
     }
     if list_entries.is_empty() {
@@ -142,9 +157,7 @@ pub fn backup(
     }
     list_entries.sort();
 
-    let list_path = request
-        .output
-        .with_extension("files.list.txt");
+    let list_path = request.output.with_extension("files.list.txt");
     if let Some(parent) = request.output.parent() {
         ensure_dir(parent)?;
     }
@@ -234,11 +247,7 @@ pub fn list(request: ListRequest) -> Result<Value> {
     parse_list_output(&output)
 }
 
-pub fn validate_archive(
-    seven_zip: &Path,
-    archive: &Path,
-    password: Option<&str>,
-) -> Result<Value> {
+pub fn validate_archive(seven_zip: &Path, archive: &Path, password: Option<&str>) -> Result<Value> {
     let mut args = vec![
         "l".to_string(),
         "-slt".to_string(),
@@ -263,11 +272,7 @@ pub fn validate_archive(
     Ok(parsed)
 }
 
-pub fn test(
-    request: TestRequest,
-    token: &AtomicBool,
-    emitter: &Emitter,
-) -> Result<Value> {
+pub fn test(request: TestRequest, token: &AtomicBool, emitter: &Emitter) -> Result<Value> {
     let mut args = vec![
         "t".to_string(),
         "-sccUTF-8".to_string(),
@@ -293,17 +298,13 @@ pub fn test(
     )?;
     emitter.progress("verify", 100.0, "完整性校验完成", None, None);
     Ok(json!({
-        "ok": outcome.exit_code == 0 || outcome.exit_code == 1,
+        "ok": outcome.exit_code == 0,
         "exitCode": outcome.exit_code,
         "warnings": outcome.warnings,
     }))
 }
 
-pub fn extract(
-    request: ExtractRequest,
-    token: &AtomicBool,
-    emitter: &Emitter,
-) -> Result<Value> {
+pub fn extract(request: ExtractRequest, token: &AtomicBool, emitter: &Emitter) -> Result<Value> {
     ensure_dir(&request.destination)?;
     if std::fs::read_dir(&request.destination)?.next().is_some() {
         return Err(SidecarError::new("解压目标目录不为空"));
@@ -353,30 +354,38 @@ pub fn extract(
         Some(total_bytes),
     )?;
 
-    // 解压后复核：任何链接/重解析点或越界路径都立即失败。
-    for entry in WalkDir::new(&request.destination)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-    {
+    // 解压后复核：任何链接/重解析点、遍历错误或越界路径都立即失败。
+    for entry in WalkDir::new(&request.destination).follow_links(false) {
+        let entry =
+            entry.map_err(|error| SidecarError::new(format!("无法检查解压结果：{error}")))?;
         if entry.depth() == 0 {
             continue;
         }
-        if let Ok(meta) = entry.metadata() {
-            if is_reparse_point(&meta) {
-                let _ = std::fs::remove_dir_all(&request.destination);
-                return Err(SidecarError::new(format!(
-                    "解压结果包含链接或重解析点：{}",
-                    entry.path().display()
-                )));
-            }
+        let meta = entry.metadata().map_err(|error| {
+            SidecarError::new(format!(
+                "无法读取解压结果 {}：{error}",
+                entry.path().display()
+            ))
+        })?;
+        if is_reparse_point(&meta) {
+            let _ = std::fs::remove_dir_all(&request.destination);
+            return Err(SidecarError::new(format!(
+                "解压结果包含链接或重解析点：{}",
+                entry.path().display()
+            )));
         }
-        if entry.file_type().is_file() {
+        if entry.file_type().is_file() || entry.file_type().is_dir() {
             ensure_inside(&request.destination, entry.path())?;
         }
     }
 
-    emitter.progress("extract", 100.0, "解压完成", Some(total_bytes), Some(total_bytes));
+    emitter.progress(
+        "extract",
+        100.0,
+        "解压完成",
+        Some(total_bytes),
+        Some(total_bytes),
+    );
     Ok(json!({
         "files": total_files,
         "bytes": total_bytes,
@@ -387,50 +396,85 @@ pub fn extract(
 }
 
 fn parse_list_output(output: &str) -> Result<Value> {
+    const MAX_ENTRIES: usize = 1_000_000;
+    const MAX_PATH_BYTES: usize = 256 * 1024 * 1024;
+
     let mut entries: Vec<String> = Vec::new();
+    let mut details: Vec<Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let mut total_bytes = 0u64;
+    let mut path_bytes = 0usize;
     let marker = "----------";
     let mut in_entries = false;
     let mut current_path: Option<String> = None;
-    let mut current_size: u64 = 0;
+    let mut current_size: Option<u64> = None;
     let mut current_folder = false;
 
-    let mut flush = |path: &mut Option<String>,
-                     size: &mut u64,
-                     folder: &mut bool|
-     -> Result<()> {
-        if let Some(value) = path.take() {
-            let normalized = validate_archive_path(&value)?;
-            entries.push(normalized);
-            if !*folder {
-                total_bytes += *size;
+    let mut flush =
+        |path: &mut Option<String>, size: &mut Option<u64>, folder: &mut bool| -> Result<()> {
+            if let Some(value) = path.take() {
+                let normalized = validate_archive_path(&value)?;
+                let identity = normalized.to_ascii_lowercase();
+                if !seen.insert(identity) {
+                    return Err(SidecarError::new(format!(
+                        "归档包含重复或大小写冲突的路径：{normalized}"
+                    )));
+                }
+                let size_value = size.take().unwrap_or(0);
+                if !*folder {
+                    total_bytes = total_bytes
+                        .checked_add(size_value)
+                        .ok_or_else(|| SidecarError::new("归档声明的总大小溢出"))?;
+                }
+                path_bytes = path_bytes
+                    .checked_add(normalized.len())
+                    .ok_or_else(|| SidecarError::new("归档路径总量溢出"))?;
+                if path_bytes > MAX_PATH_BYTES {
+                    return Err(SidecarError::new("归档路径总量超出处理上限"));
+                }
+                if entries.len() >= MAX_ENTRIES {
+                    return Err(SidecarError::new("归档条目数量超出处理上限"));
+                }
+                entries.push(normalized.clone());
+                details.push(json!({
+                    "path": normalized,
+                    "size": if *folder { 0 } else { size_value },
+                    "folder": *folder,
+                }));
             }
-        }
-        *size = 0;
-        *folder = false;
-        Ok(())
-    };
+            *size = None;
+            *folder = false;
+            Ok(())
+        };
 
     for line in output.lines() {
-        let trimmed = line.trim();
-        if trimmed == marker {
+        let trimmed = line.trim_end_matches('\r');
+        if trimmed.trim() == marker {
             in_entries = true;
             continue;
         }
         if !in_entries {
             continue;
         }
-        if trimmed.is_empty() {
+        if trimmed.trim().is_empty() {
             flush(&mut current_path, &mut current_size, &mut current_folder)?;
             continue;
         }
         if let Some(value) = trimmed.strip_prefix("Path = ") {
             flush(&mut current_path, &mut current_size, &mut current_folder)?;
-            current_path = Some(value.trim().to_string());
+            current_path = Some(value.to_string());
         } else if let Some(value) = trimmed.strip_prefix("Size = ") {
-            current_size = value.trim().parse::<u64>().unwrap_or(0);
+            let parsed = value
+                .trim()
+                .parse::<u64>()
+                .map_err(|_| SidecarError::new(format!("归档条目大小无效：{}", value.trim())))?;
+            current_size = Some(parsed);
         } else if let Some(value) = trimmed.strip_prefix("Folder = ") {
             current_folder = value.trim() == "+";
+        } else if let Some(value) = trimmed.strip_prefix("Attributes = ") {
+            if value.split_whitespace().any(|part| part == "D") {
+                current_folder = true;
+            }
         }
     }
     flush(&mut current_path, &mut current_size, &mut current_folder)?;
@@ -440,10 +484,9 @@ fn parse_list_output(output: &str) -> Result<Value> {
             "归档为空、已损坏，或密码错误。请确认归档和本地私钥。",
         ));
     }
-    entries.sort();
-    entries.dedup();
     Ok(json!({
         "entries": entries,
+        "details": details,
         "files": entries.len(),
         "bytes": total_bytes,
     }))
@@ -473,9 +516,7 @@ pub fn validate_extra_args(args: &[String]) -> Result<Vec<String>> {
         if trimmed.len() > 64 {
             return Err(SidecarError::new(format!("高级参数过长：{trimmed}")));
         }
-        let allowed = if let Some(value) = trimmed.strip_prefix("-mx=") {
-            value.parse::<u8>().map(|value| value <= 9).unwrap_or(false)
-        } else if let Some(value) = trimmed.strip_prefix("-md=") {
+        let allowed = if let Some(value) = trimmed.strip_prefix("-md=") {
             parse_dictionary(value).is_ok()
         } else if let Some(value) = trimmed.strip_prefix("-mmt=") {
             value
@@ -557,9 +598,9 @@ fn run_streaming(
         command.current_dir(dir);
     }
     hide_console(&mut command);
-    let mut child = command.spawn().map_err(|error| {
-        SidecarError::new(format!("无法启动 7z 进程：{error}"))
-    })?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| SidecarError::new(format!("无法启动 7z 进程：{error}")))?;
 
     let stdout = child
         .stdout
@@ -629,23 +670,23 @@ fn run_streaming(
 
     let stderr_thread = thread::spawn(move || {
         let mut reader = BufReader::new(stderr);
-        let mut tail = String::new();
-        let mut buffer = String::new();
+        let mut tail: Vec<u8> = Vec::new();
+        let mut buffer: Vec<u8> = Vec::new();
         loop {
             buffer.clear();
-            match reader.read_line(&mut buffer) {
+            match reader.read_until(b'\n', &mut buffer) {
                 Ok(0) => break,
                 Ok(_) => {
-                    tail.push_str(&buffer);
+                    tail.extend_from_slice(&buffer);
                     if tail.len() > 16 * 1024 {
                         let keep = tail.len() - 12 * 1024;
-                        tail = tail[keep..].to_string();
+                        tail.drain(..keep);
                     }
                 }
                 Err(_) => break,
             }
         }
-        tail
+        String::from_utf8_lossy(&tail).into_owned()
     });
 
     let mut cancelled = false;
@@ -806,6 +847,7 @@ mod tests {
             "-wC:\\",
             "-mhe=off",
             "-mx=10",
+            "-mx=0",
             "-mmt=0",
             "-md=7m",
             "-sdel",

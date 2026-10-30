@@ -79,6 +79,8 @@ const weekly = computed(() => {
       </template>
       <template v-else>
         <p class="result-detail">{{ resultNextStep }}</p>
+        <p v-if="result.preRestoreSnapshot" class="hint path-wrap">恢复前快照已保留：{{ result.preRestoreSnapshot.localPath || result.preRestoreSnapshot.id }}</p>
+        <p v-if="result.restore?.targetDsh" class="hint path-wrap">本次恢复目标：{{ result.restore.targetDsh }}</p>
         <div class="tool-grid"><button class="btn btn-secondary btn-small" @click="openSettings('diagnostics')">查看本地日志</button><button v-if="result.kind !== 'backup'" class="btn btn-secondary btn-small" @click="go('history')">返回归档历史</button></div>
       </template>
       <ul v-if="result.warnings?.length" class="warning-list"><li v-for="warning in result.warnings" :key="warning">{{ warning }}</li></ul>

@@ -2,7 +2,7 @@ import { computed, reactive } from "vue";
 import { api, copyToClipboard, isPreviewMode } from "./lib/bridge";
 import { errorMessage, restoreBlockReason } from "./lib/format";
 import { applyTheme, normalizeTheme } from "./lib/theme";
-import type { Bootstrap, Config, OnboardingInput, Page, RestoreRequest, SettingsSection, Snapshot, TaskContext, TaskProgress, TaskResult, UpdateInfo } from "./lib/types";
+import type { Bootstrap, Config, DeleteSnapshotRequest, OnboardingInput, Page, RestoreRequest, SettingsSection, Snapshot, TaskContext, TaskProgress, TaskResult, UpdateInfo } from "./lib/types";
 
 export interface ConfirmState {
   title: string;
@@ -16,6 +16,16 @@ export interface ConfirmState {
 export interface ToastAction { label: string; run: () => void }
 export interface ToastState { text: string; type: "info" | "success" | "warning" | "error"; action: ToastAction | null }
 const emptyToast: ToastState = { text: "", type: "info", action: null };
+interface PendingDelete {
+  snapshot: Snapshot;
+  rootIdentity: string;
+  backupDir: string;
+  deadline: number;
+  timer: ReturnType<typeof setTimeout>;
+  committing: boolean;
+}
+let pendingDelete: PendingDelete | null = null;
+let queuedToast: { text: string; type: ToastState["type"]; duration: number } | null = null;
 export const store = reactive({
   ready: false,
   boot: null as Bootstrap | null,
@@ -38,6 +48,9 @@ export const store = reactive({
   notice: null as { level: "warning" | "error"; message: string; time: string } | null,
   modals: { restore: false, help: false, confirm: null as ConfirmState | null },
   saving: false,
+  deleting: false,
+  pendingSnapshotId: "",
+  pendingRootIdentity: "",
   refreshing: false,
   previewMode: isPreviewMode,
   update: null as UpdateInfo | null,
@@ -46,23 +59,40 @@ export const store = reactive({
   unsubscribes: [] as Array<() => void>,
   refreshTimer: null as ReturnType<typeof setTimeout> | null,
 });
-export const snapshots = computed(() => [...(store.boot?.localSnapshots ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+export const snapshots = computed(() => {
+  const currentIdentity = store.boot?.backupRootIdentity ?? "";
+  return [...(store.boot?.localSnapshots ?? [])]
+    .filter((snapshot) => !store.pendingSnapshotId || store.pendingRootIdentity !== currentIdentity || store.pendingSnapshotId !== snapshot.id)
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id));
+});
 export const latestSnapshot = computed(() => snapshots.value[0]);
-export const isBusy = computed(() => store.startingTask || !!store.task || store.saving);
+export const isBusy = computed(() => store.startingTask || !!store.task || store.saving || store.deleting);
 export const totalSourceBytes = computed(() => store.boot?.dsh.sources.reduce((sum, source) => sum + (source.exists ? source.bytes : 0), 0) ?? 0);
 export const totalSourceFiles = computed(() => store.boot?.dsh.sources.reduce((sum, source) => sum + (source.exists ? source.files : 0), 0) ?? 0);
 export const localUsage = computed(() => store.boot?.localSnapshots.reduce((sum, snapshot) => sum + snapshot.size, 0) ?? 0);
 
 export function showToast(text: string, type: ToastState["type"] = "info", duration = 3200, action: ToastAction | null = null) {
   if (!text) return;
+  if (pendingDelete && !action) {
+    queuedToast = { text, type, duration };
+    return;
+  }
   if (store.toastTimer) clearTimeout(store.toastTimer);
   store.toast = { text, type, action };
-  store.toastTimer = setTimeout(dismissToast, duration);
+  store.toastTimer = setTimeout(() => dismissToast(true), duration);
 }
-export function dismissToast() {
+function flushQueuedToast() {
+  if (!queuedToast) return;
+  const next = queuedToast;
+  queuedToast = null;
+  showToast(next.text, next.type, next.duration);
+}
+export function dismissToast(force = false) {
+  if (pendingDelete && !force) return;
   if (store.toastTimer) clearTimeout(store.toastTimer);
   store.toastTimer = null;
   store.toast = { ...emptyToast };
+  flushQueuedToast();
 }
 export function dismissNotice() { store.notice = null; }
 let refreshSequence = 0;
@@ -107,6 +137,7 @@ function receiveTaskEvent(event: TaskEvent) {
   if (store.task && store.task.taskId !== payload.taskId) return;
   if ("progress" in event) {
     if (!store.task) {
+      cancelPendingDelete();
       store.taskStartedAt = Date.now();
       store.taskContext = { kind: payload.kind }; // Scheduled tasks: don't infer options from mutable config.
       store.taskResult = null;
@@ -162,7 +193,9 @@ export function dispose() {
   if (store.refreshTimer) clearTimeout(store.refreshTimer);
   if (pendingDelete) clearTimeout(pendingDelete.timer);
   pendingDelete = null;
-  dismissToast();
+  clearPendingState();
+  queuedToast = null;
+  dismissToast(true);
 }
 export function go(page: Page) {
   if (store.page === "settings" && page !== "settings" && store.settingsDirty) {
@@ -255,7 +288,7 @@ export async function cancelTask() {
   if (!store.task || store.canceling || store.startingTask) return;
   store.canceling = true;
   store.taskError = "";
-  try { await api.cancelTask(); }
+  try { await api.cancelTask(store.task.taskId); }
   catch (error) { store.canceling = false; store.taskError = `取消失败：${errorMessage(error)}。可重试取消，或等待任务结束。`; }
 }
 async function reloadAfterSave(): Promise<Config> {
@@ -273,6 +306,7 @@ async function reloadAfterSave(): Promise<Config> {
 }
 export async function saveConfig(config: Config): Promise<Config> {
   if (isBusy.value) throw new Error("操作进行中，请等待完成后保存设置。");
+  cancelPendingDelete();
   store.saving = true;
   try {
     await api.saveConfig(config);
@@ -284,6 +318,7 @@ export async function saveConfig(config: Config): Promise<Config> {
 }
 export async function completeOnboarding(input: OnboardingInput) {
   if (isBusy.value) throw new Error("操作进行中，请稍后重试。");
+  cancelPendingDelete();
   store.saving = true;
   try { await api.completeOnboarding(input); const normalized = await reloadAfterSave(); applyTheme(normalized.theme, true); }
   finally { store.saving = false; }
@@ -295,56 +330,86 @@ export async function checkDSH(notify = true) {
     if (notify) showToast(status.running ? "检测到 DSH 正在运行" : "未检测到正在运行的 DSH", status.running ? "warning" : "success");
   } catch (error) { showToast(errorMessage(error), "error"); }
 }
-// 删除可撤销：先从列表移出，6 秒后才真正删文件。窗口内关闭应用不会删除任何东西。
+// 删除可撤销：服务端列表保持事实，pending 只过滤显示；6 秒后才提交。
 const UNDO_WINDOW = 6000;
-let pendingDelete: { snapshot: Snapshot; timer: ReturnType<typeof setTimeout> } | null = null;
 
-function detachSnapshot(id: string): Snapshot | null {
-  const list = store.boot?.localSnapshots;
-  if (!list) return null;
-  const index = list.findIndex((item) => item.id === id);
-  if (index < 0) return null;
-  return list.splice(index, 1)[0];
+function clearPendingState() {
+  store.pendingSnapshotId = "";
+  store.pendingRootIdentity = "";
 }
-function attachSnapshot(snapshot: Snapshot) {
-  store.boot?.localSnapshots.push(snapshot);
+function cancelPendingDelete() {
+  if (!pendingDelete) return;
+  clearTimeout(pendingDelete.timer);
+  pendingDelete = null;
+  clearPendingState();
+  dismissToast(true);
 }
 
 async function commitPendingDelete() {
-  if (!pendingDelete) return;
-  const { snapshot, timer } = pendingDelete;
-  clearTimeout(timer);
-  pendingDelete = null;
-  if (isBusy.value) {
-    attachSnapshot(snapshot);
+  if (!pendingDelete || pendingDelete.committing) return;
+  const pending = pendingDelete;
+  clearTimeout(pending.timer);
+  if (store.startingTask || store.task || store.saving) {
+    pendingDelete = null;
+    clearPendingState();
+    dismissToast(true);
     showToast("有任务正在进行，已跳过这次删除", "warning");
     return;
   }
+  pending.committing = true;
+  store.deleting = true;
   try {
-    await api.deleteLocalSnapshot(snapshot.id);
+    const request: DeleteSnapshotRequest = {
+      snapshotId: pending.snapshot.id,
+      expectedRootIdentity: pending.rootIdentity,
+      expectedBackupDir: pending.backupDir,
+      expectedSha256: pending.snapshot.sha256,
+    };
+    await api.deleteLocalSnapshot(request);
+    pendingDelete = null;
+    clearPendingState();
+    dismissToast(true);
     await refresh();
     if (store.bootError) { showToast(`已删除，但列表刷新失败：${store.bootError}`, "warning"); return; }
     showToast("备份已删除，原数据不受影响", "success");
   } catch (error) {
+    pendingDelete = null;
+    clearPendingState();
+    dismissToast(true);
     await refresh();
     showToast(errorMessage(error), "error");
+  } finally {
+    store.deleting = false;
   }
 }
 
 export function deleteSnapshot(snapshot: Snapshot) {
-  if (isBusy.value) return;
-  if (pendingDelete) void commitPendingDelete();
-  const removed = detachSnapshot(snapshot.id) ?? snapshot;
-  const name = removed.localPath?.split(/[\\/]/).pop() || `dsh-backup-${removed.id}.7z`;
-  pendingDelete = { snapshot: removed, timer: setTimeout(() => { void commitPendingDelete(); }, UNDO_WINDOW) };
+  if (isBusy.value || pendingDelete) return;
+  const rootIdentity = store.boot?.backupRootIdentity ?? "";
+  if (!rootIdentity) {
+    showToast("无法确认备份目录身份，已拒绝删除；请刷新后重试", "error");
+    return;
+  }
+  const name = snapshot.localPath?.split(/[\\/]/).pop() || `dsh-backup-${snapshot.id}.7z`;
+  const pending: PendingDelete = {
+    snapshot,
+    rootIdentity,
+    backupDir: store.boot?.config.backupDir ?? "",
+    deadline: Date.now() + UNDO_WINDOW,
+    committing: false,
+    timer: setTimeout(() => { void commitPendingDelete(); }, UNDO_WINDOW),
+  };
+  pendingDelete = pending;
+  store.pendingSnapshotId = snapshot.id;
+  store.pendingRootIdentity = rootIdentity;
   showToast(`已删除 ${name}`, "info", UNDO_WINDOW, {
     label: "撤销",
     run: () => {
-      if (!pendingDelete) return;
+      if (!pendingDelete || pendingDelete.committing) return;
       clearTimeout(pendingDelete.timer);
-      attachSnapshot(pendingDelete.snapshot);
       pendingDelete = null;
-      dismissToast();
+      clearPendingState();
+      dismissToast(true);
       showToast("已撤销，归档仍在原处", "info");
     },
   });
@@ -357,8 +422,10 @@ export function openKeysFolder() { return openFolder(api.openKeysFolder); }
 export function openLogsFolder() { return openFolder(api.openLogsFolder); }
 export function openDataFolder() { return openFolder(api.openDataFolder); }
 export function openLocalSnapshot(id: string) { return openFolder(() => api.openLocalSnapshot(id)); }
-export async function copyText(text: string, label = "已复制") {
-  showToast(await copyToClipboard(text) ? label : "复制失败，请手动复制。", "info");
+export async function copyText(text: string, label = "已复制"): Promise<boolean> {
+  const copied = await copyToClipboard(text);
+  showToast(copied ? label : "复制失败，请手动复制。", copied ? "info" : "error");
+  return copied;
 }
 export function pickDirectory(defaultDir: string): Promise<string> { return api.pickDirectory(defaultDir); }
 export function dismissTaskResult() { store.taskResultDismissed = true; }

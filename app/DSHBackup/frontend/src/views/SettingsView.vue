@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { api } from "../lib/bridge";
-import { cloneConfig, compressionShort, configFingerprint, errorMessage, extraArgsError, formatDate, parseExtraArgs, scheduleLabel, validateConfig, weekdayLabel } from "../lib/format";
+import { cloneConfig, compressionHint, compressionLevels, compressionShort, configFingerprint, errorMessage, extraArgsError, formatDate, parseExtraArgs, scheduleLabel, validateConfig, weekdayLabel } from "../lib/format";
 import { applyTheme } from "../lib/theme";
 import { checkForUpdates, isBusy, openBackupFolder, openDataFolder, openKeysFolder, openLogsFolder, openReleasePage, openRepository, pickDirectory, saveConfig, store } from "../store";
-import type { CompressionLevel, Config, SettingsSection, Theme } from "../lib/types";
+import type { Config, SettingsSection, Theme } from "../lib/types";
 
 interface RailItem { id: SettingsSection; label: string; depth?: 2; when?: () => boolean }
 /* 目录是一棵树，不是一组分开的列表：depth 2 挂在上一条 depth 1 下，导轨线在行间拐圆角弯。 */
@@ -425,11 +425,11 @@ function setRetention(delta: number) {
             <h2>压缩</h2>
             <div class="setting-row">
               <div class="setting-copy">
-                <div class="setting-desc">均衡适合日常备份；极限压缩更慢、占用更多内存。</div>
+                <div class="setting-desc">{{ compressionHint(draft.compression.level) }}</div>
               </div>
               <div class="setting-control">
-                <div class="segmented" role="group" aria-label="压缩等级">
-                  <button v-for="level in (['fast', 'balanced', 'max'] as CompressionLevel[])" :key="level" type="button" :class="{ active: draft.compression.level === level }" :aria-pressed="draft.compression.level === level" @click="draft.compression.level = level">{{ compressionShort(level) }}</button>
+                <div class="segmented compression-levels" role="group" aria-label="压缩等级">
+                  <button v-for="level in compressionLevels" :key="level" type="button" :class="{ active: draft.compression.level === level }" :aria-pressed="draft.compression.level === level" @click="draft.compression.level = level">{{ compressionShort(level) }}</button>
                 </div>
               </div>
             </div>
@@ -440,7 +440,7 @@ function setRetention(delta: number) {
               <svg class="chev" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
               高级参数
             </button>
-            <div id="advancedFields" class="disc-body" :class="{ open: advancedOpen }">
+            <div id="advancedFields" class="disc-body" :class="{ open: advancedOpen }" :inert="!advancedOpen" :aria-hidden="!advancedOpen">
               <div>
                 <div class="advanced-grid">
                   <label>字典大小
@@ -449,7 +449,7 @@ function setRetention(delta: number) {
                   <label>线程数（0 为自动）<input v-model.number="draft.compression.threads" type="number" min="0" max="64" class="text-input" /></label>
                   <label class="advanced-wide">自定义参数<input v-model="extraArgsText" class="text-input mono" placeholder="例如 -mfb=273 -ms=on" :aria-invalid="!!argsError" aria-describedby="argsHint" /></label>
                 </div>
-                <p id="argsHint" class="hint" :class="{ error: argsError }">{{ argsError || '仅接受 -mx、-md、-mmt、-mfb、-ms、-mqs 白名单参数，不经过 shell。' }}</p>
+                <p id="argsHint" class="hint" :class="{ error: argsError }">{{ argsError || '仅接受 -md、-mmt、-mfb、-ms、-mqs 白名单参数，不经过 shell；压缩率请用上方档位选择。' }}</p>
               </div>
             </div>
           </section>

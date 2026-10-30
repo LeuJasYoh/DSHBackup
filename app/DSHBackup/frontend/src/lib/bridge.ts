@@ -1,4 +1,4 @@
-import type { Bootstrap, Config, Notice, OnboardingInput, RestoreRequest, TaskProgress, TaskResult, UpdateInfo, VerifyRequest } from "./types";
+import type { Bootstrap, Config, DeleteSnapshotRequest, Notice, OnboardingInput, RestoreRequest, TaskProgress, TaskResult, UpdateInfo, VerifyRequest } from "./types";
 
 declare global {
   interface Window {
@@ -52,10 +52,10 @@ export const api = {
   saveConfig: (config: Config) => invoke<void>("SaveConfig", config),
   pickDirectory: (defaultDir: string) => invoke<string>("PickDirectory", defaultDir),
   startBackup: (force: boolean) => invoke<string>("StartBackup", force),
-  cancelTask: () => invoke<void>("CancelTask"),
+  cancelTask: (taskId: string) => invoke<void>("CancelTask", taskId),
   startRestore: (request: RestoreRequest) => invoke<string>("StartRestore", request),
   startVerify: (request: VerifyRequest) => invoke<string>("StartVerify", request),
-  deleteLocalSnapshot: (id: string) => invoke<void>("DeleteLocalSnapshot", id),
+  deleteLocalSnapshot: (request: DeleteSnapshotRequest) => invoke<void>("DeleteLocalSnapshot", request),
   checkDSH: () => invoke<Bootstrap["dsh"]>("CheckDSH"),
   openBackupFolder: () => invoke<void>("OpenBackupFolder"),
   openKeysFolder: () => invoke<void>("OpenKeysFolder"),

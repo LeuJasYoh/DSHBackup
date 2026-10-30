@@ -77,18 +77,26 @@ type UpdateInfo struct {
 }
 
 type Bootstrap struct {
-	Config         config.Config       `json:"config"`
-	App            AppInfo             `json:"app"`
-	Paths          PathsInfo           `json:"paths"`
-	DSH            DSHStatus           `json:"dsh"`
-	LocalSnapshots []manifest.Snapshot `json:"localSnapshots"`
-	Latest         *manifest.Snapshot  `json:"latest,omitempty"`
-	Key            sidecar.KeyInfo     `json:"key"`
-	KeyError       string              `json:"keyError,omitempty"`
-	Disk           DiskInfo            `json:"disk"`
-	Schedule       ScheduleInfo        `json:"schedule"`
-	Warnings       []string            `json:"warnings"`
-	LogsPath       string              `json:"logsPath"`
+	Config             config.Config       `json:"config"`
+	App                AppInfo             `json:"app"`
+	Paths              PathsInfo           `json:"paths"`
+	DSH                DSHStatus           `json:"dsh"`
+	LocalSnapshots     []manifest.Snapshot `json:"localSnapshots"`
+	Latest             *manifest.Snapshot  `json:"latest,omitempty"`
+	Key                sidecar.KeyInfo     `json:"key"`
+	KeyError           string              `json:"keyError,omitempty"`
+	Disk               DiskInfo            `json:"disk"`
+	Schedule           ScheduleInfo        `json:"schedule"`
+	Warnings           []string            `json:"warnings"`
+	LogsPath           string              `json:"logsPath"`
+	BackupRootIdentity string              `json:"backupRootIdentity"`
+}
+
+type DeleteSnapshotRequest struct {
+	SnapshotID           string `json:"snapshotId"`
+	ExpectedRootIdentity string `json:"expectedRootIdentity"`
+	ExpectedBackupDir    string `json:"expectedBackupDir"`
+	ExpectedSHA256       string `json:"expectedSha256"`
 }
 
 type OnboardingInput struct {

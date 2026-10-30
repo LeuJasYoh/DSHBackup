@@ -58,23 +58,27 @@ type Manifest struct {
 	Archive         ArchiveInfo     `json:"archive"`
 	Encryption      *EncryptionInfo `json:"encryption,omitempty"`
 	Compressor      CompressorInfo  `json:"compressor"`
+	CaptureStatus   string          `json:"captureStatus,omitempty"`
 }
 
 type Snapshot struct {
-	ID              string `json:"id"`
-	CreatedAt       string `json:"createdAt"`
-	Kind            string `json:"kind"`
-	Size            int64  `json:"size"`
-	SHA256          string `json:"sha256"`
-	Encrypted       bool   `json:"encrypted"`
-	KeyID           string `json:"keyId,omitempty"`
-	DesktopIncluded bool   `json:"desktopIncluded"`
-	FileCount       int64  `json:"fileCount"`
-	TotalBytes      int64  `json:"totalBytes"`
-	Compression     string `json:"compression,omitempty"`
-	Status          string `json:"status"`
-	LocalPath       string `json:"localPath,omitempty"`
-	ManifestPath    string `json:"manifestPath,omitempty"`
+	ID              string   `json:"id"`
+	CreatedAt       string   `json:"createdAt"`
+	Kind            string   `json:"kind"`
+	Size            int64    `json:"size"`
+	SHA256          string   `json:"sha256"`
+	Encrypted       bool     `json:"encrypted"`
+	KeyID           string   `json:"keyId,omitempty"`
+	DesktopIncluded bool     `json:"desktopIncluded"`
+	FileCount       int64    `json:"fileCount"`
+	TotalBytes      int64    `json:"totalBytes"`
+	Compression     string   `json:"compression,omitempty"`
+	CaptureStatus   string   `json:"captureStatus,omitempty"`
+	Scope           []string `json:"scope,omitempty"`
+	Status          string   `json:"status"`
+	LocalPath       string   `json:"localPath,omitempty"`
+	ManifestPath    string   `json:"manifestPath,omitempty"`
+	ManifestAliases []string `json:"manifestAliases,omitempty"`
 }
 
 var idPattern = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}$`)
@@ -174,6 +178,11 @@ func Validate(value Manifest) error {
 	default:
 		return fmt.Errorf("未知备份类型：%s", value.Kind)
 	}
+	switch value.CaptureStatus {
+	case "", "complete", "partial":
+	default:
+		return fmt.Errorf("未知采集状态：%s", value.CaptureStatus)
+	}
 	if value.Encryption != nil && value.Encryption.Enabled {
 		if value.Encryption.KeyID == "" || value.Encryption.WrappedPassword == "" {
 			return errors.New("加密信息不完整")
@@ -195,6 +204,8 @@ func Scan(dir string) ([]Snapshot, []string, error) {
 	}
 	var snapshots []Snapshot
 	var warnings []string
+	byID := make(map[string]int)
+	values := make(map[string]Manifest)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".manifest.json") {
 			continue
@@ -206,12 +217,12 @@ func Scan(dir string) ([]Snapshot, []string, error) {
 			continue
 		}
 		archivePath := filepath.Join(dir, value.Archive.Name)
-		info, err := os.Stat(archivePath)
-		if err != nil {
+		info, statErr := os.Stat(archivePath)
+		if statErr != nil {
 			warnings = append(warnings, fmt.Sprintf("%s 的归档文件不存在", entry.Name()))
 		}
 		snapshot := FromManifest(value, archivePath, manifestPath)
-		if err != nil {
+		if statErr != nil {
 			snapshot.Status = "missing"
 			snapshot.Size = 0
 		} else {
@@ -220,10 +231,53 @@ func Scan(dir string) ([]Snapshot, []string, error) {
 				snapshot.Status = "size-mismatch"
 			}
 		}
+		if index, duplicate := byID[value.ID]; duplicate {
+			existing := &snapshots[index]
+			if manifestsConflict(values[value.ID], value) {
+				existing.Status = "conflict"
+				warnings = append(warnings, fmt.Sprintf("%s 与同一归档的另一份清单内容冲突", entry.Name()))
+				continue
+			}
+			preferNew := isStandardManifest(archivePath, manifestPath) && !isStandardManifest(archivePath, existing.ManifestPath)
+			if preferNew {
+				existing.ManifestAliases = append(existing.ManifestAliases, existing.ManifestPath)
+				existing.ManifestPath = manifestPath
+			} else {
+				existing.ManifestAliases = append(existing.ManifestAliases, manifestPath)
+			}
+			continue
+		}
+		byID[value.ID] = len(snapshots)
+		values[value.ID] = value
 		snapshots = append(snapshots, snapshot)
 	}
 	Sort(snapshots)
 	return snapshots, warnings, nil
+}
+
+func isStandardManifest(archivePath, manifestPath string) bool {
+	return filepath.Base(manifestPath) == filepath.Base(ManifestPath(archivePath))
+}
+
+func manifestsConflict(left, right Manifest) bool {
+	if left.Archive.SHA256 != right.Archive.SHA256 ||
+		left.Archive.Size != right.Archive.Size ||
+		left.Kind != right.Kind ||
+		left.CreatedAt != right.CreatedAt ||
+		left.CaptureStatus != right.CaptureStatus {
+		return true
+	}
+	if (left.Encryption == nil) != (right.Encryption == nil) {
+		return true
+	}
+	if left.Encryption != nil && right.Encryption != nil {
+		if left.Encryption.Enabled != right.Encryption.Enabled ||
+			left.Encryption.KeyID != right.Encryption.KeyID ||
+			left.Encryption.WrappedPassword != right.Encryption.WrappedPassword {
+			return true
+		}
+	}
+	return false
 }
 
 func FromManifest(value Manifest, archivePath, manifestPath string) Snapshot {
@@ -244,6 +298,8 @@ func FromManifest(value Manifest, archivePath, manifestPath string) Snapshot {
 		FileCount:       value.Files.Files,
 		TotalBytes:      value.Files.Bytes,
 		Compression:     compressionLevel(value.Compressor.Args),
+		CaptureStatus:   value.CaptureStatus,
+		Scope:           append([]string{}, value.Scope...),
 		Status:          "ready",
 		LocalPath:       archivePath,
 		ManifestPath:    manifestPath,
@@ -251,8 +307,16 @@ func FromManifest(value Manifest, archivePath, manifestPath string) Snapshot {
 }
 
 func Sort(snapshots []Snapshot) {
-	sort.Slice(snapshots, func(i, j int) bool {
-		return snapshots[i].CreatedAt > snapshots[j].CreatedAt
+	sort.SliceStable(snapshots, func(i, j int) bool {
+		left, leftErr := time.Parse(time.RFC3339, snapshots[i].CreatedAt)
+		right, rightErr := time.Parse(time.RFC3339, snapshots[j].CreatedAt)
+		if leftErr == nil && rightErr == nil && !left.Equal(right) {
+			return left.After(right)
+		}
+		if snapshots[i].CreatedAt != snapshots[j].CreatedAt {
+			return snapshots[i].CreatedAt > snapshots[j].CreatedAt
+		}
+		return snapshots[i].ID > snapshots[j].ID
 	})
 }
 
@@ -266,11 +330,17 @@ func compressionLevel(args []string) string {
 		}
 	}
 	switch {
-	case level >= 1 && level <= 3:
+	case level == 0:
+		return "store"
+	case level == 1:
 		return "fast"
-	case level >= 4 && level <= 7:
+	case level >= 2 && level <= 3:
+		return "quick"
+	case level >= 4 && level <= 6:
 		return "balanced"
-	case level >= 8:
+	case level >= 7 && level <= 8:
+		return "high"
+	case level >= 9:
 		return "max"
 	default:
 		return ""

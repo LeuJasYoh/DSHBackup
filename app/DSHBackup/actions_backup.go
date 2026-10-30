@@ -9,6 +9,7 @@ import (
 
 	"DSHBackup/internal/backup"
 	"DSHBackup/internal/manifest"
+	"DSHBackup/internal/pathguard"
 	"DSHBackup/internal/platform"
 	"DSHBackup/internal/sidecar"
 )
@@ -18,33 +19,40 @@ func (a *App) StartBackup(force bool) (string, error) {
 }
 
 func (a *App) startBackup(force bool, kind string) (string, error) {
+	if err := a.readyError(); err != nil {
+		return "", err
+	}
 	taskID, ctx, err := a.beginTask("backup")
 	if err != nil {
 		return "", err
 	}
-	started := false
-	defer func() {
-		if !started {
-			a.finishTask(taskID)
-		}
-	}()
+	if err := a.launchBackup(taskID, ctx, force, kind); err != nil {
+		a.finishTask(taskID)
+		return "", err
+	}
+	return taskID, nil
+}
+
+// launchBackup starts the worker for an already-reserved task. The caller owns
+// the task slot and must release it on synchronous errors.
+func (a *App) launchBackup(taskID string, ctx context.Context, force bool, kind string) error {
 	cfg := a.configSnapshot()
 	if !cfg.OnboardingComplete {
-		return "", errors.New("请先完成首次设置")
+		return errors.New("请先完成首次设置")
 	}
 	if a.sidecar == nil {
-		return "", errors.New(a.sidecarError)
+		return errors.New(a.sidecarError)
 	}
 	if !a.sevenZipOK {
-		return "", errors.New(a.sevenZipError)
+		return errors.New(a.sevenZipError)
 	}
 	if !force {
 		running, evidence, err := a.checkDSHRunningForTask()
 		if err != nil {
-			return "", err
+			return err
 		}
 		if running {
-			return "", fmt.Errorf("%s%s", runningPrefix, strings.Join(evidence, "；"))
+			return fmt.Errorf("%s%s", runningPrefix, strings.Join(evidence, "；"))
 		}
 	}
 	if cfg.EncryptionLocal {
@@ -52,7 +60,7 @@ func (a *App) startBackup(force bool, kind string) (string, error) {
 		keyErr := a.ensureEncryptionReady(keyCtx, cfg, true)
 		keyCancel()
 		if keyErr != nil {
-			return "", keyErr
+			return keyErr
 		}
 	}
 	manager := backup.NewManager(a.paths, a.sidecar, a.logger, a.sevenZipPath, a.sevenZipVersion, Version)
@@ -73,7 +81,6 @@ func (a *App) startBackup(force bool, kind string) (string, error) {
 			})
 		},
 	}
-	started = true
 	go func() {
 		result, err := manager.Backup(ctx, input)
 		taskResult := TaskResult{TaskID: taskID, Kind: "backup"}
@@ -94,10 +101,13 @@ func (a *App) startBackup(force bool, kind string) (string, error) {
 		a.finishTask(taskID)
 		a.emitTaskResult(taskResult)
 	}()
-	return taskID, nil
+	return nil
 }
 
 func (a *App) StartRestore(request RestoreRequest) (string, error) {
+	if err := a.readyError(); err != nil {
+		return "", err
+	}
 	taskID, ctx, err := a.beginTask("restore")
 	if err != nil {
 		return "", err
@@ -168,6 +178,10 @@ func (a *App) StartRestore(request RestoreRequest) (string, error) {
 			taskResult.Success = false
 			taskResult.Error = a.taskErrorMessage(err)
 			taskResult.Message = "恢复失败"
+			taskResult.PreRestoreSnapshot = result.PreRestoreSnapshot
+			if result.TargetDSH != "" {
+				taskResult.Restore = &RestoreOutcome{TargetDSH: result.TargetDSH}
+			}
 			if backup.IsRunning(err) {
 				taskResult.Error = a.runningError(err).Error()
 			}
@@ -190,6 +204,9 @@ func (a *App) StartRestore(request RestoreRequest) (string, error) {
 }
 
 func (a *App) StartVerify(request VerifyRequest) (string, error) {
+	if err := a.readyError(); err != nil {
+		return "", err
+	}
 	taskID, ctx, err := a.beginTask("verify")
 	if err != nil {
 		return "", err
@@ -240,38 +257,56 @@ func (a *App) StartVerify(request VerifyRequest) (string, error) {
 	return taskID, nil
 }
 
-func (a *App) DeleteLocalSnapshot(id string) error {
+func (a *App) DeleteLocalSnapshot(request DeleteSnapshotRequest) error {
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	err := a.awaitReady(waitCtx)
+	waitCancel()
+	if err != nil {
+		return errors.New("应用仍在初始化，请稍后重试")
+	}
+	if strings.TrimSpace(request.SnapshotID) == "" {
+		return errors.New("快照 ID 不能为空")
+	}
 	taskID, ctx, err := a.beginTask("delete")
 	if err != nil {
 		return err
 	}
 	defer a.finishTask(taskID)
 	cfg := a.configSnapshot()
+	identity, err := pathguard.Identity(cfg.BackupDir)
+	if err != nil {
+		return fmt.Errorf("无法确认当前备份目录身份：%w", err)
+	}
+	if request.ExpectedRootIdentity == "" || request.ExpectedRootIdentity != identity {
+		return errors.New("备份目录在选择后已改变，已拒绝删除；请刷新归档列表后重试")
+	}
 	snapshots, _, err := manifest.Scan(cfg.BackupDir)
 	if err != nil {
 		return err
 	}
 	var target *manifest.Snapshot
 	for index := range snapshots {
-		if snapshots[index].ID == id {
+		if snapshots[index].ID == request.SnapshotID {
 			target = &snapshots[index]
 			break
 		}
 	}
 	if target == nil {
-		return errors.New("找不到本地快照")
+		return errors.New("找不到本地快照；请刷新归档列表")
 	}
-	if a.sidecar == nil {
-		return errors.New(a.sidecarError)
+	if request.ExpectedSHA256 != "" && !strings.EqualFold(request.ExpectedSHA256, target.SHA256) {
+		return errors.New("归档在删除前发生变化，已拒绝删除；请刷新归档列表")
+	}
+	if target.Status == "conflict" {
+		return errors.New("该归档存在冲突的清单，请先人工处理重复清单后再删除")
 	}
 	manager := backup.NewManager(a.paths, a.sidecar, a.logger, a.sevenZipPath, a.sevenZipVersion, Version)
 	if err := manager.DeleteLocal(ctx, *target, cfg.BackupDir); err != nil {
 		return err
 	}
 	if a.logger != nil {
-		a.logger.Info("snapshot.delete", "删除本地快照", map[string]any{"id": id})
+		a.logger.Info("snapshot.delete", "删除本地快照", map[string]any{"id": request.SnapshotID})
 	}
-	a.finishTask(taskID)
 	a.emitStateChanged("snapshot-delete")
 	return nil
 }

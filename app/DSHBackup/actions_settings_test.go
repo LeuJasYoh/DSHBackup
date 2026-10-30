@@ -17,6 +17,7 @@ import (
 	"DSHBackup/internal/config"
 	"DSHBackup/internal/logging"
 	"DSHBackup/internal/manifest"
+	"DSHBackup/internal/pathguard"
 )
 
 func newTestApp(t *testing.T) *App {
@@ -34,7 +35,10 @@ func newTestApp(t *testing.T) *App {
 		UserHome:         filepath.Join(root, "home"),
 		RoamingAppData:   filepath.Join(root, "roaming"),
 	}
-	return &App{paths: paths, cfg: config.Default(paths.DefaultBackupDir)}
+	app := NewApp(paths)
+	app.setConfig(config.Default(paths.DefaultBackupDir))
+	app.markReady()
+	return app
 }
 
 func TestSaveConfigProtectsServerFields(t *testing.T) {
@@ -97,7 +101,7 @@ func TestSettingsRejectChangesDuringTask(t *testing.T) {
 	if err != nil || string(before) != string(after) {
 		t.Fatalf("rejected setting changed the saved config: %v", err)
 	}
-	if err := app.CancelTask(); err != nil || ctx.Err() != context.Canceled {
+	if err := app.CancelTask(id); err != nil || ctx.Err() != context.Canceled {
 		t.Fatalf("task cancellation failed: %v, %v", err, ctx.Err())
 	}
 	if err := app.SaveConfig(input); err == nil {
@@ -187,6 +191,55 @@ func TestFailedTaskPreflightReleasesSettings(t *testing.T) {
 		if err := app.SaveConfig(app.configSnapshot()); err != nil {
 			t.Fatalf("failed preflight retained task lock: %v", err)
 		}
+	}
+}
+
+func TestDeleteRequiresMatchingBackupRootIdentity(t *testing.T) {
+	app := newTestApp(t)
+	if err := os.MkdirAll(app.paths.BackupDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "20261030-120000"
+	archive := filepath.Join(app.paths.BackupDir(), manifest.ArchiveName(id))
+	if err := os.WriteFile(archive, []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value := manifest.Manifest{
+		SchemaVersion: manifest.SchemaVersion,
+		ID:            id,
+		CreatedAt:     "2026-10-30T12:00:00Z",
+		Kind:          manifest.KindManual,
+		Archive: manifest.ArchiveInfo{
+			Name:   manifest.ArchiveName(id),
+			Size:   int64(len("archive")),
+			SHA256: strings.Repeat("a", 64),
+		},
+	}
+	if err := manifest.Write(manifest.ManifestPath(archive), value); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := pathguard.Identity(app.paths.BackupDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := DeleteSnapshotRequest{
+		SnapshotID:           id,
+		ExpectedRootIdentity: "wrong-identity",
+		ExpectedBackupDir:    app.paths.BackupDir(),
+		ExpectedSHA256:       value.Archive.SHA256,
+	}
+	if err := app.DeleteLocalSnapshot(request); err == nil {
+		t.Fatal("wrong backup root identity accepted")
+	}
+	if _, err := os.Stat(archive); err != nil {
+		t.Fatalf("archive removed after rejected identity: %v", err)
+	}
+	request.ExpectedRootIdentity = identity
+	if err := app.DeleteLocalSnapshot(request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(archive); !os.IsNotExist(err) {
+		t.Fatalf("archive still exists after delete: %v", err)
 	}
 }
 

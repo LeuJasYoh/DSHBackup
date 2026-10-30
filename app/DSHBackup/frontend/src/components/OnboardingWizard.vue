@@ -2,14 +2,14 @@
 import { ref } from "vue";
 import { useModalFocus } from "../lib/modalFocus";
 import { completeOnboarding, pickDirectory, store } from "../store";
-import { compressionLabel, compressionShort, errorMessage, isAbsoluteDirectory } from "../lib/format";
+import { compressionHint, compressionLabel, compressionLevels, compressionShort, errorMessage, isAbsoluteDirectory } from "../lib/format";
 import type { CompressionLevel } from "../lib/types";
 
 const card = ref<HTMLElement | null>(null);
 useModalFocus(card);
 const step = ref(1);
 const backupDir = ref(store.boot?.paths.defaultBackupDir || "");
-const compression = ref<CompressionLevel>("balanced");
+const compression = ref<CompressionLevel>("store");
 const includeDesktop = ref(true);
 const busy = ref(false);
 const failure = ref("");
@@ -28,7 +28,7 @@ function next() {
 function useDefaults() {
   if (busy.value) return;
   backupDir.value = store.boot?.paths.defaultBackupDir || "";
-  compression.value = "balanced";
+  compression.value = "store";
   includeDesktop.value = true;
   next();
 }
@@ -72,8 +72,8 @@ async function finish() {
               </div>
               <div class="wizard-field">
                 <span class="wizard-label">压缩等级</span>
-                <div class="segmented" role="group" aria-label="压缩等级"><button v-for="level in (['fast', 'balanced', 'max'] as CompressionLevel[])" :key="level" type="button" :class="{ active: compression === level }" :aria-pressed="compression === level" @click="compression = level">{{ compressionShort(level) }}</button></div>
-                <p class="hint">默认均衡；极限压缩会增加耗时与内存占用。</p>
+                <div class="segmented compression-levels" role="group" aria-label="压缩等级"><button v-for="level in compressionLevels" :key="level" type="button" :class="{ active: compression === level }" :aria-pressed="compression === level" @click="compression = level">{{ compressionShort(level) }}</button></div>
+                <p class="hint">{{ compressionHint(compression) }}</p>
               </div>
             </div>
           </template>

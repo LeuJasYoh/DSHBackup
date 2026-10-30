@@ -1,4 +1,4 @@
-import type { Config, KeyInfo, Snapshot, TaskContext } from "./types";
+import type { CompressionLevel, Config, KeyInfo, Snapshot, TaskContext } from "./types";
 
 export function formatBytes(value: number | undefined | null): string {
   if (!value || value <= 0) return "0 B";
@@ -41,23 +41,54 @@ export function kindShort(kind: string): string {
   if (kind === "pre-restore") return "恢复前";
   return "手动";
 }
+export const compressionLevels: CompressionLevel[] = ["store", "fast", "quick", "balanced", "high", "max"];
+const compressionNames: Record<CompressionLevel, string> = {
+  store: "仅存储",
+  fast: "极速",
+  quick: "快速",
+  balanced: "均衡",
+  high: "高压缩",
+  max: "极限",
+};
 export function compressionLabel(level?: string): string {
-  if (level === "fast") return "快速压缩";
-  if (level === "max") return "极限压缩";
-  return level === "balanced" ? "均衡压缩" : "未记录";
+  if (!level || !(level in compressionNames)) return "未记录";
+  return level === "store" ? "仅存储" : `${compressionNames[level as CompressionLevel]}压缩`;
 }
 export function compressionShort(level?: string): string {
-  return compressionLabel(level).replace("压缩", "");
+  return level && level in compressionNames ? compressionNames[level as CompressionLevel] : "未记录";
+}
+export function compressionHint(level?: string): string {
+  switch (level) {
+    case "store": return "不压缩，速度最快；归档最大，适合已压缩文件或本地 SSD。";
+    case "fast": return "7z 最快压缩，速度快，体积略小于仅存储。";
+    case "quick": return "快速压缩，速度与体积之间的轻量折中。";
+    case "balanced": return "均衡压缩，日常备份的体积与耗时折中。";
+    case "high": return "更高压缩率，耗时和内存高于均衡。";
+    case "max": return "最高压缩率，耗时和内存最高。";
+    default: return "请选择压缩档位。";
+  }
 }
 export function kindLabel(kind: string): string {
   if (kind === "pre-restore") return "恢复前快照";
   if (kind === "scheduled") return "计划备份";
   return "手动备份";
 }
+export function scopeLabel(snapshot?: Snapshot): string {
+  if (!snapshot) return "未知";
+  if (snapshot.scope?.length) {
+    const hasDsh = snapshot.scope.includes("dsh");
+    const hasDesktop = snapshot.scope.includes("desktop-state");
+    if (hasDsh && hasDesktop) return "DSH + 桌面";
+    if (hasDesktop) return "仅桌面";
+    if (hasDsh) return "仅 DSH";
+  }
+  return snapshot.desktopIncluded ? "DSH + 桌面" : "仅 DSH";
+}
 export function statusLabel(status: string): string {
   if (status === "ready") return "归档可用";
   if (status === "missing") return "归档缺失";
   if (status === "size-mismatch") return "大小不符";
+  if (status === "conflict") return "清单冲突";
   return status || "状态未知";
 }
 export function archiveBlockReason(snapshot?: Snapshot): string {
@@ -131,16 +162,19 @@ export function isAbsoluteDirectory(path: string): boolean {
 export function parseExtraArgs(text: string): string[] { return text.trim().split(/\s+/).filter(Boolean); }
 export function extraArgsError(text: string): string {
   const patterns = [
-    /^-mx=[0-9]$/, /^-md=(16|32|64|128|256|512|1024)m$/i,
+    /^-md=(16|32|64|128|256|512|1024)m$/i,
     /^-mmt=([1-9]|[1-5][0-9]|6[0-4])$/, /^-mfb=([5-9]|[1-9][0-9]|1[0-9]{2}|2[0-6][0-9]|27[0-3])$/,
     /^-ms=(on|off)$/, /^-mqs=(on|off)$/,
   ];
-  const invalid = parseExtraArgs(text).find((arg) => !patterns.some((pattern) => pattern.test(arg)));
+  const args = parseExtraArgs(text);
+  if (args.length > 12) return "高级参数最多 12 个";
+  const invalid = args.find((arg) => !patterns.some((pattern) => pattern.test(arg)));
   return invalid ? `不允许的 7z 高级参数：${invalid}` : "";
 }
 export function validateConfig(config: Config, extraArgsText: string): string {
   if (!isAbsoluteDirectory(config.backupDir)) return "备份目录必须是有效的 Windows 绝对路径";
   if (!["system", "dark", "light"].includes(config.theme)) return "请选择有效的界面主题";
+  if (!compressionLevels.includes(config.compression.level)) return "请选择有效的压缩档位";
   if (!Number.isInteger(config.retention.local) || config.retention.local < 1 || config.retention.local > 99) return "保留份数必须是 1 到 99 的整数";
   if (config.schedule.kind !== "manual" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(config.schedule.time)) return "计划时间格式必须为 HH:MM";
   if (!Number.isInteger(config.schedule.weekday) || config.schedule.weekday < 0 || config.schedule.weekday > 6) return "请选择有效的星期";

@@ -16,6 +16,7 @@ import (
 	"DSHBackup/internal/config"
 	"DSHBackup/internal/logging"
 	"DSHBackup/internal/manifest"
+	"DSHBackup/internal/pathguard"
 	"DSHBackup/internal/platform"
 	"DSHBackup/internal/sevenparams"
 	"DSHBackup/internal/sidecar"
@@ -112,7 +113,11 @@ func NewManager(paths apppath.Paths, client *sidecar.Client, logger *logging.Log
 }
 
 func (m *Manager) Backup(ctx context.Context, input BackupInput) (BackupResult, error) {
-	return m.backup(ctx, input, m.sources(input.Config), false)
+	sources, err := m.sources(input.Config)
+	if err != nil {
+		return BackupResult{}, err
+	}
+	return m.backup(ctx, input, sources, false)
 }
 
 func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidecar.StageRoot, protection bool) (BackupResult, error) {
@@ -183,11 +188,12 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 		return BackupResult{}, mapTaskError(err)
 	}
 	warnings := append([]string{}, stageResult.Warnings...)
+	incomplete := !stageResult.Complete || stageResult.Skipped > 0 || len(stageResult.Warnings) > 0
 	if protection {
 		if stageResult.Skipped > 0 || len(warnings) > 0 {
 			return BackupResult{}, errors.New("未能完整保护目标数据，请关闭占用文件的程序后重试：" + strings.Join(warnings, "；"))
 		}
-		if stageResult.Files == 0 {
+		if len(stageResult.Entries) == 0 {
 			return BackupResult{}, nil
 		}
 	} else {
@@ -253,9 +259,12 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 		if err != nil {
 			return BackupResult{}, err
 		}
-		wrapped, _, err := m.client.WrapPassword(ctx, m.paths.KeysDir, password)
+		wrapped, wrappedKeyID, err := m.client.WrapPassword(ctx, m.paths.KeysDir, password)
 		if err != nil {
 			return BackupResult{}, err
+		}
+		if wrappedKeyID != key.KeyID {
+			return BackupResult{}, errors.New("封装密码使用的公钥与当前私钥不匹配，已阻止创建无法恢复的备份")
 		}
 		manifestValue.Encryption = &manifest.EncryptionInfo{
 			Enabled:         true,
@@ -288,6 +297,9 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 		return BackupResult{}, mapTaskError(err)
 	}
 	warnings = append(warnings, backupResult.Warnings...)
+	if protection && (backupResult.ExitCode != 0 || len(backupResult.Warnings) > 0) {
+		return BackupResult{}, errors.New("保护快照压缩未完整完成：" + strings.Join(backupResult.Warnings, "；"))
+	}
 	manifestValue.Archive = manifest.ArchiveInfo{
 		Name:   manifest.ArchiveName(manifestValue.ID),
 		Size:   backupResult.Size,
@@ -308,13 +320,40 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 		}
 		warnings = append(warnings, testResult.Warnings...)
 		verified = testResult.OK
-		if !testResult.OK {
+		if !testResult.OK || (protection && (testResult.ExitCode != 0 || len(testResult.Warnings) > 0)) {
 			return BackupResult{}, errors.New("归档完整性校验未通过")
+		}
+		if protection {
+			listing, err := m.client.ListArchive(ctx, m.sevenZip, outputPath, password)
+			if err != nil {
+				return BackupResult{}, fmt.Errorf("读取保护快照清单失败：%w", err)
+			}
+			if err := verifyProtectionArchive(stageResult.Entries, listing.Details); err != nil {
+				return BackupResult{}, fmt.Errorf("保护快照不完整，已中止恢复：%w", err)
+			}
 		}
 	} else {
 		report("verify", 86, "已跳过完整性测试", backupResult.Size, backupResult.Size)
 	}
 
+	if encrypted {
+		unwrapped, unwrapErr := m.client.UnwrapPassword(ctx, m.paths.KeysDir, manifestValue.Encryption.WrappedPassword)
+		if unwrapErr != nil {
+			return BackupResult{}, fmt.Errorf("新归档密码无法用落盘私钥解开，未保存：%w", unwrapErr)
+		}
+		if unwrapped != password {
+			return BackupResult{}, errors.New("新归档密码与私钥解封结果不一致，未保存")
+		}
+	}
+
+	if incomplete || len(warnings) > 0 {
+		manifestValue.CaptureStatus = "partial"
+	} else {
+		manifestValue.CaptureStatus = "complete"
+	}
+	if err := ctx.Err(); err != nil {
+		return BackupResult{}, err
+	}
 	report("save", 87, "写入备份目录", backupResult.Size, backupResult.Size)
 	archivePath := filepath.Join(input.Config.BackupDir, manifestValue.Archive.Name)
 	manifestPath := manifest.ManifestPath(archivePath)
@@ -325,8 +364,12 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 	if free.Free < uint64(backupResult.Size)+16*1024*1024 {
 		return BackupResult{}, fmt.Errorf("备份目录空间不足以写入归档（可用 %s）", formatBytes(int64(free.Free)))
 	}
-	if err := moveFile(outputPath, archivePath); err != nil {
+	if err := moveFile(ctx, outputPath, archivePath); err != nil {
 		return BackupResult{}, fmt.Errorf("写入本地备份失败：%w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(archivePath)
+		return BackupResult{}, err
 	}
 	if err := manifest.Write(manifestPath, manifestValue); err != nil {
 		_ = os.Remove(archivePath)
@@ -337,12 +380,16 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 	snapshot.Encrypted = manifestValue.Encryption != nil && manifestValue.Encryption.Enabled
 	snapshot.Status = "ready"
 	if input.Kind != manifest.KindPreRestore {
-		report("cleanup", 98, "应用本地保留策略", 0, 0)
-		deleted, err := m.applyLocalRetention(input.Config.BackupDir, input.Config.Retention.Local, manifestValue.ID)
-		if err != nil {
-			warnings = append(warnings, "本地保留策略执行失败："+err.Error())
-		} else if len(deleted) > 0 {
-			warnings = append(warnings, "已按保留策略清理本地快照："+strings.Join(deleted, "、"))
+		if incomplete || len(warnings) > 0 {
+			warnings = append(warnings, "本次备份存在未完整的项目，已跳过自动清理旧备份")
+		} else {
+			report("cleanup", 98, "应用本地保留策略", 0, 0)
+			deleted, err := m.applyLocalRetention(ctx, input.Config.BackupDir, input.Config.Retention.Local, manifestValue.ID)
+			if err != nil {
+				warnings = append(warnings, "本地保留策略执行失败："+err.Error())
+			} else if len(deleted) > 0 {
+				warnings = append(warnings, "已按保留策略清理本地快照："+strings.Join(deleted, "、"))
+			}
 		}
 	}
 	report("done", 100, "备份完成", backupResult.Size, backupResult.Size)
@@ -372,6 +419,7 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 		return RestoreResult{}, errors.New("恢复到其他目录时不能同时覆盖系统桌面登录态")
 	}
 	targetDSH := input.TargetDSH
+	customTarget := targetDSH != ""
 	if targetDSH == "" {
 		targetDSH = m.paths.DSHDataDir()
 	}
@@ -379,9 +427,25 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 		return RestoreResult{}, errors.New("恢复目标必须是绝对路径")
 	}
 	targetDSH = filepath.Clean(targetDSH)
-	for _, protected := range []string{m.paths.AppDir, input.Config.BackupDir} {
-		if isPathInside(targetDSH, protected) || isPathInside(protected, targetDSH) {
-			return RestoreResult{}, errors.New("恢复目标不能覆盖应用、备份目录或它们的上级目录")
+	resolvedTarget, err := pathguard.ResolveTarget(targetDSH)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("无法解析恢复目标：%w", err)
+	}
+	targetDSH = resolvedTarget
+	protected := []string{m.paths.AppDir, input.Config.BackupDir, m.paths.DataDir, m.paths.TempDir}
+	if customTarget {
+		protected = append(protected, m.paths.DSHDataDir(), m.paths.DesktopStateDir())
+	}
+	for _, root := range protected {
+		if root == "" {
+			continue
+		}
+		overlap, err := pathguard.Overlaps(targetDSH, root)
+		if err != nil {
+			return RestoreResult{}, fmt.Errorf("无法检查恢复目标边界：%w", err)
+		}
+		if overlap {
+			return RestoreResult{}, errors.New("恢复目标不能与当前 DSH 数据、桌面登录态、应用或备份目录重叠")
 		}
 	}
 	report := func(phase string, percent float64, message string, done, total int64) {
@@ -442,6 +506,31 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 	for _, entry := range validation.Entries {
 		entries[entry] = true
 	}
+	required := uint64(0)
+	if validation.Bytes > 0 {
+		required = uint64(validation.Bytes) + 32*1024*1024
+	}
+	if required > 0 {
+		tempFree, err := platform.DiskFree(taskDir)
+		if err != nil {
+			return RestoreResult{}, fmt.Errorf("检查恢复暂存空间失败：%w", err)
+		}
+		if tempFree.Free < required {
+			return RestoreResult{}, fmt.Errorf("恢复暂存空间不足：需要至少 %s，可用 %s", formatBytes(int64(required)), formatBytes(int64(tempFree.Free)))
+		}
+		for _, target := range []string{targetDSH, m.paths.DesktopStateDir()} {
+			if target == "" {
+				continue
+			}
+			targetFree, err := platform.DiskFree(target)
+			if err != nil {
+				return RestoreResult{}, fmt.Errorf("检查恢复目标空间失败：%w", err)
+			}
+			if targetFree.Free < required {
+				return RestoreResult{}, fmt.Errorf("恢复目标空间不足：需要至少 %s，可用 %s", formatBytes(int64(required)), formatBytes(int64(targetFree.Free)))
+			}
+		}
+	}
 	extractDir := filepath.Join(taskDir, "extract")
 	if err := os.MkdirAll(extractDir, 0o700); err != nil {
 		return RestoreResult{}, err
@@ -468,6 +557,31 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 	}
 	if len(targets) == 0 {
 		return RestoreResult{}, errors.New("该快照不包含所选的恢复内容")
+	}
+	for index := range targets {
+		resolved, err := pathguard.ResolveTarget(targets[index].Path)
+		if err != nil {
+			return RestoreResult{}, fmt.Errorf("无法解析恢复目标：%w", err)
+		}
+		targets[index].Path = resolved
+		for _, root := range []string{m.paths.AppDir, input.Config.BackupDir, m.paths.DataDir, m.paths.TempDir} {
+			overlap, err := pathguard.Overlaps(targets[index].Path, root)
+			if err != nil {
+				return RestoreResult{}, err
+			}
+			if overlap {
+				return RestoreResult{}, errors.New("恢复目标不能与应用或备份目录重叠")
+			}
+		}
+		for other := 0; other < index; other++ {
+			overlap, err := pathguard.Overlaps(targets[index].Path, targets[other].Path)
+			if err != nil {
+				return RestoreResult{}, err
+			}
+			if overlap {
+				return RestoreResult{}, errors.New("多个恢复目标不能互相重叠")
+			}
+		}
 	}
 	var preSnapshot *manifest.Snapshot
 	if input.PreRestoreSnapshot {
@@ -503,12 +617,15 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 			warnings = append(warnings, preResult.Warnings...)
 		}
 	}
+	partial := func() RestoreResult {
+		return RestoreResult{PreRestoreSnapshot: preSnapshot, DesktopRestored: desktopRestored, TargetDSH: targetDSH}
+	}
 	if err := ctx.Err(); err != nil {
-		return RestoreResult{}, err
+		return partial(), err
 	}
 	if running, evidence, err := platform.IsDSHRunning(m.paths.DSHDataDir()); err == nil && running {
 		if !input.Force {
-			return RestoreResult{}, &RunningError{Evidence: evidence}
+			return partial(), &RunningError{Evidence: evidence}
 		}
 		warnings = append(warnings, "恢复时检测到 DSH 仍在运行，文件覆盖可能不完整")
 	}
@@ -517,7 +634,7 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 		report("install", 82+clamp(event.Percent, 0, 100)*0.13, event.Message, event.BytesDone, event.BytesTotal)
 	})
 	if err != nil {
-		return RestoreResult{}, mapTaskError(err)
+		return partial(), mapTaskError(err)
 	}
 	warnings = append(warnings, installResult.Warnings...)
 	report("verify", 96, "验证恢复结果", 0, 0)
@@ -526,7 +643,7 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 		if preSnapshot != nil {
 			message += "；恢复前快照已保留：" + preSnapshot.LocalPath
 		}
-		return RestoreResult{}, errors.New(message)
+		return partial(), errors.New(message)
 	}
 	report("done", 100, "恢复完成", installResult.Bytes, installResult.Bytes)
 	if m.logger != nil {
@@ -600,22 +717,21 @@ func (m *Manager) DeleteLocal(_ context.Context, snapshot manifest.Snapshot, bac
 	if snapshot.LocalPath == "" || snapshot.ManifestPath == "" {
 		return errors.New("快照没有本地文件")
 	}
-	absoluteDir, err := filepath.Abs(backupDir)
+	inside, err := pathguard.Contains(snapshot.LocalPath, backupDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("无法检查归档位置：%w", err)
 	}
-	archive, err := filepath.Abs(snapshot.LocalPath)
-	if err != nil {
-		return err
-	}
-	if !isPathInside(archive, absoluteDir) {
+	if !inside {
 		return errors.New("拒绝删除备份目录之外的文件")
 	}
-	if err := os.Remove(archive); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(snapshot.LocalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.Remove(snapshot.ManifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	manifestPaths := append([]string{snapshot.ManifestPath}, snapshot.ManifestAliases...)
+	for _, manifestPath := range manifestPaths {
+		if err := os.Remove(manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("归档已删除，但清理清单失败：%w", err)
+		}
 	}
 	return nil
 }
@@ -633,7 +749,20 @@ func (m *Manager) ensureKeys(ctx context.Context, backupDir string) (sidecar.Key
 		if info.Error != "" {
 			return sidecar.KeyInfo{}, errors.New(info.Error)
 		}
-		return info, nil
+		if info.CanEncrypt {
+			return info, nil
+		}
+		repaired, err := m.client.KeysEnsure(ctx, m.paths.KeysDir, false)
+		if err != nil {
+			return sidecar.KeyInfo{}, fmt.Errorf("本地密钥不可用于加密：%w", err)
+		}
+		if !repaired.CanEncrypt {
+			return sidecar.KeyInfo{}, errors.New("本地密钥不可用于加密，请检查 public.key 与 private.key 是否配对")
+		}
+		return repaired, nil
+	}
+	if strings.TrimSpace(info.PublicKey) != "" {
+		return sidecar.KeyInfo{}, errors.New("检测到公钥但找不到私钥，不会自动生成新密钥；请恢复 data\\keys 目录")
 	}
 	snapshots, _, err := manifest.Scan(backupDir)
 	if err != nil {
@@ -644,7 +773,7 @@ func (m *Manager) ensureKeys(ctx context.Context, backupDir string) (sidecar.Key
 			return sidecar.KeyInfo{}, errors.New("检测到已有的加密备份，但本地私钥缺失。为避免旧备份永久失效，不会自动生成新密钥；请先恢复 data\\keys 目录")
 		}
 	}
-	generated, err := m.client.KeysEnsure(ctx, m.paths.KeysDir)
+	generated, err := m.client.KeysEnsure(ctx, m.paths.KeysDir, true)
 	if err != nil {
 		return sidecar.KeyInfo{}, err
 	}
@@ -664,8 +793,15 @@ func (m *Manager) checkBackupDestination(input BackupInput) error {
 	if _, err := os.Stat(m.sevenZip); err != nil {
 		return fmt.Errorf("7za.exe 不可用：%w", err)
 	}
-	for _, source := range []string{m.paths.DSHDataDir(), m.paths.DesktopStateDir(), m.paths.DataDir} {
-		if isPathInside(input.Config.BackupDir, source) {
+	for _, source := range []string{m.paths.DSHDataDir(), m.paths.DesktopStateDir(), m.paths.DataDir, m.paths.TempDir} {
+		if source == "" {
+			continue
+		}
+		contained, err := pathguard.Contains(input.Config.BackupDir, source)
+		if err != nil {
+			return fmt.Errorf("无法检查备份目录边界：%w", err)
+		}
+		if contained {
 			return errors.New("备份目录不能位于 DSH 数据或应用 data 目录内")
 		}
 	}
@@ -675,10 +811,18 @@ func (m *Manager) checkBackupDestination(input BackupInput) error {
 	return nil
 }
 
-func (m *Manager) sources(cfg config.Config) []sidecar.StageRoot {
+func (m *Manager) sources(cfg config.Config) ([]sidecar.StageRoot, error) {
 	var roots []sidecar.StageRoot
 	dshDir := m.paths.DSHDataDir()
-	if m.sourceExists(dshDir) {
+	info, err := os.Stat(dshDir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, errors.New("找不到可备份的 DSH 数据：目录不存在 " + dshDir)
+	case err != nil:
+		return nil, fmt.Errorf("无法读取 DSH 数据目录 %s：%w", dshDir, err)
+	case !info.IsDir():
+		return nil, errors.New("DSH 数据路径不是目录：" + dshDir)
+	default:
 		roots = append(roots, sidecar.StageRoot{
 			Name:       "dsh",
 			Source:     dshDir,
@@ -688,16 +832,25 @@ func (m *Manager) sources(cfg config.Config) []sidecar.StageRoot {
 	}
 	if cfg.IncludeDesktop {
 		desktopDir := m.paths.DesktopStateDir()
-		if m.sourceExists(desktopDir) {
-			roots = append(roots, sidecar.StageRoot{
-				Name:       "desktop-state",
-				Source:     desktopDir,
-				ExcludeTop: DesktopExcludeTop,
-				ExcludeRel: DesktopExcludeRel,
-			})
+		if desktopDir != "" {
+			desktopInfo, desktopErr := os.Stat(desktopDir)
+			switch {
+			case errors.Is(desktopErr, os.ErrNotExist):
+			case desktopErr != nil:
+				return nil, fmt.Errorf("无法读取桌面登录态目录 %s：%w", desktopDir, desktopErr)
+			case !desktopInfo.IsDir():
+				return nil, errors.New("桌面登录态路径不是目录：" + desktopDir)
+			default:
+				roots = append(roots, sidecar.StageRoot{
+					Name:       "desktop-state",
+					Source:     desktopDir,
+					ExcludeTop: DesktopExcludeTop,
+					ExcludeRel: DesktopExcludeRel,
+				})
+			}
 		}
 	}
-	return roots
+	return roots, nil
 }
 
 func (m *Manager) sourceExists(path string) bool {
@@ -750,6 +903,74 @@ func (m *Manager) verifyStaged(result sidecar.StageResult, includeDesktop bool) 
 	return warnings, nil
 }
 
+func verifyProtectionArchive(staged, listed []sidecar.ArchiveEntry) error {
+	type fileInfo struct {
+		path string
+		size int64
+	}
+	stagedFiles := make(map[string]fileInfo)
+	stagedDirs := make(map[string]string)
+	for _, entry := range staged {
+		key := strings.ToLower(filepath.ToSlash(entry.Path))
+		if entry.Folder {
+			stagedDirs[key] = entry.Path
+		} else {
+			stagedFiles[key] = fileInfo{path: entry.Path, size: entry.Size}
+		}
+	}
+	listedFiles := make(map[string]int64)
+	listedDirs := make(map[string]bool)
+	for _, entry := range listed {
+		key := strings.ToLower(strings.TrimRight(filepath.ToSlash(entry.Path), "/"))
+		if entry.Folder {
+			listedDirs[key] = true
+			if _, ok := stagedDirs[key]; !ok {
+				return fmt.Errorf("保护快照包含清单外的目录：%s", entry.Path)
+			}
+			continue
+		}
+		if _, exists := listedFiles[key]; exists {
+			return fmt.Errorf("保护快照包含重复文件：%s", entry.Path)
+		}
+		listedFiles[key] = entry.Size
+	}
+	for key, info := range stagedFiles {
+		size, ok := listedFiles[key]
+		if !ok {
+			return fmt.Errorf("保护快照缺少文件：%s", info.path)
+		}
+		if size != info.size {
+			return fmt.Errorf("保护快照文件大小不符：%s（预期 %d，实际 %d）", info.path, info.size, size)
+		}
+	}
+	for key := range listedFiles {
+		if _, ok := stagedFiles[key]; !ok {
+			return fmt.Errorf("保护快照包含未暂存的文件：%s", key)
+		}
+	}
+	for dirKey, dirPath := range stagedDirs {
+		hasChild := false
+		for fileKey := range stagedFiles {
+			if strings.HasPrefix(fileKey, dirKey+"/") {
+				hasChild = true
+				break
+			}
+		}
+		if !hasChild {
+			for otherDir := range stagedDirs {
+				if otherDir != dirKey && strings.HasPrefix(otherDir, dirKey+"/") {
+					hasChild = true
+					break
+				}
+			}
+		}
+		if !hasChild && !listedDirs[dirKey] {
+			return fmt.Errorf("保护快照缺少空目录：%s", dirPath)
+		}
+	}
+	return nil
+}
+
 func countFiles(root string) int64 {
 	var count int64
 	_ = filepath.WalkDir(root, func(_ string, entry os.DirEntry, err error) error {
@@ -761,7 +982,7 @@ func countFiles(root string) int64 {
 	return count
 }
 
-func (m *Manager) applyLocalRetention(backupDir string, keep int, protectID string) ([]string, error) {
+func (m *Manager) applyLocalRetention(ctx context.Context, backupDir string, keep int, protectID string) ([]string, error) {
 	if keep < 1 {
 		keep = 1
 	}
@@ -774,51 +995,60 @@ func (m *Manager) applyLocalRetention(backupDir string, keep int, protectID stri
 		if snapshot.Kind == manifest.KindPreRestore {
 			continue
 		}
+		if snapshot.Status != "ready" || snapshot.CaptureStatus == "partial" {
+			continue
+		}
 		candidates = append(candidates, snapshot)
 	}
 	manifest.Sort(candidates)
 	if len(candidates) <= keep {
 		return nil, nil
 	}
-	protected := false
-	for index := 0; index < keep; index++ {
-		if candidates[index].ID == protectID {
-			protected = true
-			break
-		}
+
+	survivors := make(map[string]bool, keep)
+	for index := 0; index < keep && index < len(candidates); index++ {
+		survivors[candidates[index].ID] = true
 	}
-	if !protected {
+	if protectID != "" && !survivors[protectID] {
 		for _, snapshot := range candidates {
 			if snapshot.ID == protectID {
-				candidates = append([]manifest.Snapshot{snapshot}, removeSnapshot(candidates, protectID)...)
+				if len(survivors) >= keep {
+					var removeID string
+					for id := range survivors {
+						removeID = id
+						break
+					}
+					delete(survivors, removeID)
+				}
+				survivors[protectID] = true
 				break
 			}
 		}
 	}
+
 	var deleted []string
-	for index := keep; index < len(candidates); index++ {
-		snapshot := candidates[index]
-		if snapshot.ID == protectID {
+	for _, snapshot := range candidates {
+		if survivors[snapshot.ID] || snapshot.ID == protectID {
 			continue
 		}
-		_ = os.Remove(snapshot.LocalPath)
-		_ = os.Remove(snapshot.ManifestPath)
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
+		if err := os.Remove(snapshot.LocalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return deleted, fmt.Errorf("删除旧归档 %s 失败，已保留其清单：%w", snapshot.ID, err)
+		}
+		manifestPaths := append([]string{snapshot.ManifestPath}, snapshot.ManifestAliases...)
+		for _, manifestPath := range manifestPaths {
+			if err := os.Remove(manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return deleted, fmt.Errorf("旧归档 %s 已删除，但清理清单失败：%w", snapshot.ID, err)
+			}
+		}
 		deleted = append(deleted, snapshot.ID)
 		if m.logger != nil {
 			m.logger.Info("retention.local", "清理旧本地快照", map[string]any{"id": snapshot.ID})
 		}
 	}
 	return deleted, nil
-}
-
-func removeSnapshot(snapshots []manifest.Snapshot, id string) []manifest.Snapshot {
-	result := make([]manifest.Snapshot, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		if snapshot.ID != id {
-			result = append(result, snapshot)
-		}
-	}
-	return result
 }
 
 func verifyRestored(entries map[string]bool, targetDSH string, desktopRestored bool, desktopDir string) error {
@@ -870,7 +1100,15 @@ func uniqueID(dir string, created time.Time) (string, time.Time, error) {
 	for attempt := 0; attempt < 120; attempt++ {
 		id := manifest.NewID(created)
 		archive := filepath.Join(dir, manifest.ArchiveName(id))
+		archiveMissing := false
 		if _, err := os.Stat(archive); errors.Is(err, os.ErrNotExist) {
+			archiveMissing = true
+		}
+		manifestMissing := false
+		if _, err := os.Stat(manifest.ManifestPath(archive)); errors.Is(err, os.ErrNotExist) {
+			manifestMissing = true
+		}
+		if archiveMissing && manifestMissing {
 			return id, created, nil
 		}
 		created = created.Add(time.Second)
@@ -907,8 +1145,13 @@ func ensureWritableDir(dir string) (string, error) {
 	return absolute, nil
 }
 
-func moveFile(source, destination string) error {
+func moveFile(ctx context.Context, source, destination string) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(destination); err == nil {
+		return errors.New("目标归档已存在，拒绝覆盖")
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	if err := os.Rename(source, destination); err == nil {
@@ -919,23 +1162,44 @@ func moveFile(source, destination string) error {
 		return err
 	}
 	defer input.Close()
-	output, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(output, input); err != nil {
-		_ = output.Close()
-		_ = os.Remove(destination)
-		return err
+	buffer := make([]byte, 1024*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			_ = output.Close()
+			_ = os.Remove(destination)
+			return err
+		}
+		read, readErr := input.Read(buffer)
+		if read > 0 {
+			if _, writeErr := output.Write(buffer[:read]); writeErr != nil {
+				_ = output.Close()
+				_ = os.Remove(destination)
+				return writeErr
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			_ = output.Close()
+			_ = os.Remove(destination)
+			return readErr
+		}
 	}
 	if err := output.Sync(); err != nil {
 		_ = output.Close()
+		_ = os.Remove(destination)
 		return err
 	}
 	if err := output.Close(); err != nil {
 		return err
 	}
-	return os.Remove(source)
+	_ = os.Remove(source)
+	return nil
 }
 
 func isPathInside(path, parent string) bool {

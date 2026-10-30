@@ -76,7 +76,7 @@ func Default(defaultBackupDir string) Config {
 		IncludeDesktop:     true,
 		EncryptionLocal:    false,
 		Compression: Compression{
-			Level:        "balanced",
+			Level:        "store",
 			DictionaryMB: 0,
 			Threads:      0,
 			ExtraArgs:    []string{},
@@ -106,8 +106,34 @@ func Load(path, defaultBackupDir string) (Config, error) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return Default(defaultBackupDir), fmt.Errorf("配置格式损坏：%w", err)
 	}
+	cfg.migrateLegacyMX()
 	cfg.Normalize(defaultBackupDir)
 	return cfg, nil
+}
+
+// Older builds allowed -mx in the advanced arguments, where it silently
+// overrode the selected level. Fold the last value into the new preset.
+func (c *Config) migrateLegacyMX() {
+	var kept []string
+	last := -1
+	for _, raw := range c.Compression.ExtraArgs {
+		trimmed := strings.TrimSpace(raw)
+		if strings.HasPrefix(strings.ToLower(trimmed), "-mx=") {
+			var value int
+			if _, err := fmt.Sscanf(strings.ToLower(trimmed), "-mx=%d", &value); err == nil && value >= 0 && value <= 9 {
+				last = value
+			}
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	if last >= 0 {
+		c.Compression.Level = sevenparams.LevelForMX(last)
+	}
+	c.Compression.ExtraArgs = kept
+	if c.Compression.ExtraArgs == nil {
+		c.Compression.ExtraArgs = []string{}
+	}
 }
 
 func (c *Config) Normalize(defaultBackupDir string) {
@@ -121,7 +147,7 @@ func (c *Config) Normalize(defaultBackupDir string) {
 		c.BackupDir = defaultBackupDir
 	}
 	if c.Compression.Level == "" {
-		c.Compression.Level = "balanced"
+		c.Compression.Level = "store"
 	}
 	if c.Compression.ExtraArgs == nil {
 		c.Compression.ExtraArgs = []string{}
@@ -180,7 +206,7 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("本地备份目录必须是绝对路径：%s", cfg.BackupDir)
 	}
 	switch cfg.Compression.Level {
-	case "fast", "balanced", "max":
+	case "store", "fast", "quick", "balanced", "high", "max":
 	default:
 		return fmt.Errorf("未知压缩档位：%s", cfg.Compression.Level)
 	}
@@ -238,26 +264,80 @@ func (c Config) NextRun(now time.Time) (time.Time, bool) {
 
 func (c Config) NextRunAfter(lastRun time.Time) (time.Time, bool) {
 	now := time.Now()
+	if c.Schedule.Kind == ScheduleManual {
+		return time.Time{}, false
+	}
 	if lastRun.IsZero() {
 		return c.NextRun(now)
 	}
+	if lastRun.After(now) {
+		return c.nextOccurrenceAfter(lastRun)
+	}
+	return c.NextRun(now)
+}
+
+func (c Config) nextOccurrenceAfter(after time.Time) (time.Time, bool) {
 	hour, minute, err := parseClock(c.Schedule.Time)
-	if err != nil || c.Schedule.Kind == ScheduleManual {
+	if err != nil {
 		return time.Time{}, false
 	}
-	loc := lastRun.Location()
+	loc := after.Location()
 	if c.Schedule.Kind == ScheduleDaily {
-		candidate := time.Date(lastRun.Year(), lastRun.Month(), lastRun.Day(), hour, minute, 0, 0, loc).AddDate(0, 0, 1)
-		if candidate.Before(now.Add(-24 * time.Hour)) {
-			candidate, _ = c.NextRun(now)
+		candidate := time.Date(after.Year(), after.Month(), after.Day(), hour, minute, 0, 0, loc)
+		if !candidate.After(after) {
+			candidate = candidate.AddDate(0, 0, 1)
 		}
 		return candidate, true
 	}
-	candidate := lastRun.AddDate(0, 0, 7)
-	if candidate.Before(now.Add(-7 * 24 * time.Hour)) {
-		return c.NextRun(now)
+	if c.Schedule.Kind != ScheduleWeekly {
+		return time.Time{}, false
+	}
+	weekday := time.Weekday(c.Schedule.Weekday)
+	daysAhead := (int(weekday) - int(after.Weekday()) + 7) % 7
+	candidate := time.Date(after.Year(), after.Month(), after.Day(), hour, minute, 0, 0, loc).AddDate(0, 0, daysAhead)
+	if !candidate.After(after) {
+		candidate = candidate.AddDate(0, 0, 7)
 	}
 	return candidate, true
+}
+
+// DueOccurrence returns the latest scheduled occurrence at or before now that
+// has not already been handled. A zero lastRun means the schedule is not armed.
+func (c Config) DueOccurrence(now, lastRun time.Time) (time.Time, bool) {
+	hour, minute, err := parseClock(c.Schedule.Time)
+	if err != nil || c.Schedule.Kind == ScheduleManual || lastRun.IsZero() {
+		return time.Time{}, false
+	}
+	loc := now.Location()
+	if c.Schedule.Kind == ScheduleDaily {
+		candidate := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, loc)
+		if candidate.After(now) {
+			candidate = candidate.AddDate(0, 0, -1)
+		}
+		if candidate.After(lastRun) {
+			return candidate, true
+		}
+		return time.Time{}, false
+	}
+	if c.Schedule.Kind != ScheduleWeekly {
+		return time.Time{}, false
+	}
+	weekday := time.Weekday(c.Schedule.Weekday)
+	daysBack := (int(now.Weekday()) - int(weekday) + 7) % 7
+	candidate := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, loc).AddDate(0, 0, -daysBack)
+	if candidate.After(now) {
+		candidate = candidate.AddDate(0, 0, -7)
+	}
+	if candidate.After(lastRun) {
+		return candidate, true
+	}
+	return time.Time{}, false
+}
+
+func (c Config) ScheduleChanged(other Config) bool {
+	return c.Schedule.Kind != other.Schedule.Kind ||
+		c.Schedule.Time != other.Schedule.Time ||
+		c.Schedule.Weekday != other.Schedule.Weekday
 }
 
 func parseClock(value string) (int, int, error) {

@@ -118,9 +118,17 @@ func (p Paths) TempTaskDir(taskID string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	marker := filepath.Join(dir, tempTaskMarker)
+	if err := os.WriteFile(marker, []byte("DSHBackup task directory\n"), 0o600); err != nil {
+		return "", err
+	}
 	return dir, nil
 }
 
+const tempTaskMarker = ".dshbackup-task"
+
+// CleanTemp removes only directories explicitly marked as task-owned. Unknown
+// files and directories from older versions are left for manual inspection.
 func (p Paths) CleanTemp() error {
 	entries, err := os.ReadDir(p.TempDir)
 	if err != nil {
@@ -131,7 +139,13 @@ func (p Paths) CleanTemp() error {
 	}
 	var problems []string
 	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
 		path := filepath.Join(p.TempDir, entry.Name())
+		if _, err := os.Stat(filepath.Join(path, tempTaskMarker)); err != nil {
+			continue
+		}
 		if err := os.RemoveAll(path); err != nil {
 			problems = append(problems, err.Error())
 		}

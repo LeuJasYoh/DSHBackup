@@ -1,5 +1,5 @@
 import { cloneConfig, errorMessage, isAbsoluteDirectory, restoreBlockReason, validateConfig } from "./format";
-import type { Bootstrap, Config, Notice, OnboardingInput, RestoreRequest, Snapshot, TaskKind, TaskProgress, TaskResult, UpdateInfo, VerifyRequest } from "./types";
+import type { Bootstrap, Config, DeleteSnapshotRequest, Notice, OnboardingInput, RestoreRequest, Snapshot, TaskKind, TaskProgress, TaskResult, UpdateInfo, VerifyRequest } from "./types";
 
 type Listener = (payload: unknown) => void;
 const listeners = new Map<string, Set<Listener>>();
@@ -19,7 +19,7 @@ const root = "D:\\DSHBackup";
 const baseConfig: Config = {
   schemaVersion: 1, theme: "system", updateCheck: true, onboardingComplete: params.get("onboarding") !== "1", backupDir: `${root}\\backups`,
   includeDesktop: true, encryptionLocal: false,
-  compression: { level: "balanced", dictionaryMb: 0, threads: 0, extraArgs: [] },
+  compression: { level: "store", dictionaryMb: 0, threads: 0, extraArgs: [] },
   schedule: { kind: "manual", time: "03:00", weekday: 1 }, retention: { local: 7 },
   preRestoreSnapshot: true, verifyAfterBackup: true, lastScheduledAt: "",
 };
@@ -28,16 +28,16 @@ function makeSnapshot(id: string, date: Date, config: Config): Snapshot {
     id, createdAt: date.toISOString(), kind: "manual", size: 64.3 * 1024 * 1024, sha256: "a".repeat(64),
     encrypted: config.encryptionLocal, keyId: config.encryptionLocal ? "mock-key-id" : undefined,
     desktopIncluded: config.includeDesktop, fileCount: 68214, totalBytes: 103.2 * 1024 * 1024,
-    compression: config.compression.level, status: "ready",
+    compression: config.compression.level, captureStatus: "complete", scope: config.includeDesktop ? ["dsh", "desktop-state"] : ["dsh"], status: "ready",
     localPath: `${config.backupDir}\\dsh-backup-${id}.7z`, manifestPath: `${config.backupDir}\\dsh-backup-${id}.manifest.json`,
   };
 }
 const bootstrap: Bootstrap = {
   config: baseConfig,
   app: {
-    version: "1.2.1", buildTime: "2026-10-26T19:00:00+08:00", platform: "windows/amd64", writable: true, portable: true, warnings: [],
+    version: "1.2.3", buildTime: "2026-10-26T19:00:00+08:00", platform: "windows/amd64", writable: true, portable: true, warnings: [],
     sevenZip: { path: "tools\\7za.exe", version: "7-Zip (a) 26.05 (x64)", ok: true },
-    sidecar: { path: "dsh-backup-core.exe", version: "1.2.1", ok: true },
+    sidecar: { path: "dsh-backup-core.exe", version: "1.2.3", ok: true },
   },
   paths: { appDir: root, dataDir: `${root}\\data`, configDir: `${root}\\data\\config`, logsDir: `${root}\\data\\logs`, keysDir: `${root}\\data\\keys`, backupDir: baseConfig.backupDir, defaultBackupDir: baseConfig.backupDir },
   dsh: {
@@ -48,15 +48,17 @@ const bootstrap: Bootstrap = {
     ],
   },
   localSnapshots: params.get("onboarding") === "1" ? [] : [1, 2, 3].map((day) => makeSnapshot(`preview-${day}`, new Date(Date.now() - day * 86400000), baseConfig)),
-  key: { exists: false, privatePath: `${root}\\data\\keys\\private.key` },
+  key: { exists: false, canEncrypt: false, privatePath: `${root}\\data\\keys\\private.key` },
   disk: { path: baseConfig.backupDir, free: 186 * 1024 ** 3, total: 512 * 1024 ** 3 },
   schedule: { kind: "manual", time: "03:00", weekday: 1, nextRun: "", lastRun: "" }, warnings: [], logsPath: `${root}\\data\\logs`,
+  backupRootIdentity: "mock-volume:mock-directory",
 };
 // Dev tests may replace mockApi methods or mutate this state. No file/credential operations occur here.
 export const mockState = { bootstrap, currentTask: null as TaskProgress | null, starting: false };
 let timer: ReturnType<typeof setInterval> | null = null;
 function refreshDerived() {
-  bootstrap.latest = [...bootstrap.localSnapshots].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  bootstrap.latest = [...bootstrap.localSnapshots].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+  bootstrap.backupRootIdentity = `mock:${bootstrap.config.backupDir.toLowerCase()}`;
   bootstrap.paths.backupDir = bootstrap.config.backupDir;
   bootstrap.disk.path = bootstrap.config.backupDir;
   bootstrap.schedule = { ...bootstrap.schedule, ...bootstrap.config.schedule, lastRun: bootstrap.config.lastScheduledAt };
@@ -71,7 +73,7 @@ function refreshDerived() {
   }
 }
 function ensureKey() {
-  if (bootstrap.config.encryptionLocal && !bootstrap.key.exists) bootstrap.key = { exists: true, keyId: "mock-key-id", privatePath: `${root}\\data\\keys\\private.key` };
+  if (bootstrap.config.encryptionLocal && !bootstrap.key.exists) bootstrap.key = { exists: true, canEncrypt: true, keyId: "mock-key-id", privatePath: `${root}\\data\\keys\\private.key` };
 }
 function ensureIdle() { if (mockState.currentTask || mockState.starting) throw new Error("已有任务正在运行"); }
 function checkRunning(force: boolean) { if (bootstrap.dsh.running && !force) throw new Error("DSH_RUNNING:进程 DSH.exe 正在运行"); }
@@ -169,15 +171,18 @@ export const mockApi = {
   async StartVerify(request: VerifyRequest): Promise<string> {
     return startJob("verify", () => { snapshotFor(request.snapshotId); return { phases: ["verify", "verify"], finish: () => ({ success: true, message: "校验完成（开发模拟）" }) }; });
   },
-  async CancelTask(): Promise<void> {
+  async CancelTask(taskId: string): Promise<void> {
     if (timer) clearInterval(timer);
     timer = null;
     const task = mockState.currentTask;
+    if (task && taskId && task.taskId !== taskId) throw new Error("要取消的任务已经结束或被替换");
     mockState.currentTask = null;
     if (task) mockEvents.emit("task:result", { taskId: task.taskId, kind: task.kind, success: false, message: "任务已取消", error: "任务已取消" });
   },
-  async DeleteLocalSnapshot(id: string): Promise<void> {
-    ensureIdle(); await delay(); bootstrap.localSnapshots = bootstrap.localSnapshots.filter((item) => item.id !== id);
+  async DeleteLocalSnapshot(request: DeleteSnapshotRequest): Promise<void> {
+    ensureIdle(); await delay();
+    if (request.expectedRootIdentity !== bootstrap.backupRootIdentity) throw new Error("备份目录在选择后已改变，已拒绝删除；请刷新归档列表后重试");
+    bootstrap.localSnapshots = bootstrap.localSnapshots.filter((item) => item.id !== request.snapshotId);
     refreshDerived(); mockEvents.emit("state:changed", { reason: "snapshot-delete" });
   },
   async CheckDSH() { await delay(); return clone(bootstrap.dsh); },
@@ -194,8 +199,8 @@ export const mockApi = {
     const currentVersion = bootstrap.app.version;
     if (params.get("update") === "1") {
       return {
-        currentVersion, latestVersion: "1.2.2", available: true, checkedAt: new Date().toISOString(),
-        url: "https://github.com/LeuJasYoh/DSHBackup/releases/tag/v1.2.2", publishedAt: "2026-10-30T10:00:00Z",
+        currentVersion, latestVersion: "1.2.4", available: true, checkedAt: new Date().toISOString(),
+        url: "https://github.com/LeuJasYoh/DSHBackup/releases/tag/v1.2.4", publishedAt: "2026-10-30T10:00:00Z",
       };
     }
     return { currentVersion, latestVersion: currentVersion, available: false, checkedAt: new Date().toISOString(), url: "https://github.com/LeuJasYoh/DSHBackup/releases" };
