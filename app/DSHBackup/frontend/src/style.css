@@ -687,8 +687,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16px, #000 calc(100% - 16px), transparent);
   mask-image: linear-gradient(to bottom, transparent, #000 16px, #000 calc(100% - 16px), transparent);
 }
-.rail-title { display: flex; align-items: center; gap: 6px; padding: 0 0 12px 4px; color: var(--muted); font-size: 14px; }
-.rail-title svg { width: 16px; height: 16px; }
 .rail-list { position: relative; display: flex; flex-direction: column; margin-inline-start: 1px; }
 .rail-tree {
   position: absolute; top: 0; inset-inline-start: 0; width: 25px;

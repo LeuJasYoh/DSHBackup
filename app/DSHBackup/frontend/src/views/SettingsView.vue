@@ -308,10 +308,6 @@ function setRetention(delta: number) {
     <div v-if="draft" class="settings-body" :style="{ '--rail-top': railTop + 'px' }">
       <div class="settings-rail">
         <nav ref="railEl" class="settings-nav" aria-label="设置目录" :data-scrollable="railScrolls">
-          <div class="rail-title">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M21 5H3M15 12H3M17 19H3"/></svg>
-            <span>目录</span>
-          </div>
           <div class="rail-list">
             <svg class="rail-tree rail-tree-base" :style="{ height: railRows + 'px' }" :viewBox="`0 0 25 ${railRows}`" aria-hidden="true"><path :d="railPath" /></svg>
             <svg class="rail-tree rail-tree-mark" :style="markStyle" :viewBox="`0 0 25 ${railRows}`" aria-hidden="true"><path :d="railPath" /></svg>

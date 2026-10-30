@@ -48,20 +48,17 @@ function jump(id: string) {
 function onScroll() {
   const container = doc.value;
   if (!container) return;
-  // The last section can never scroll up to the threshold line, so a pure
-  // "top has passed" rule leaves the final rail items unreachable. At the
-  // bottom, the last section wins.
-  const scrollable = container.scrollHeight > container.clientHeight + 8;
-  if (scrollable && container.scrollTop + container.clientHeight >= container.scrollHeight - 8) {
-    active.value = sections[sections.length - 1].id;
-    return;
-  }
+  // Near the end the last sections can never reach a line 28px below the top,
+  // so the line itself slides down as the remaining scroll shrinks. Every
+  // section gets its turn in order instead of jumping to the last one.
+  const remaining = Math.max(0, container.scrollHeight - container.scrollTop - container.clientHeight);
+  const line = Math.max(28, container.clientHeight - remaining);
   const top = container.getBoundingClientRect().top;
   let current = sections[0].id;
   for (const section of sections) {
     const element = container.querySelector<HTMLElement>(`#help-${section.id}`);
     if (!element) continue;
-    if (element.getBoundingClientRect().top - top <= 28) current = section.id;
+    if (element.getBoundingClientRect().top - top <= line) current = section.id;
   }
   active.value = current;
 }
