@@ -1,6 +1,6 @@
 import { computed, reactive } from "vue";
 import { api, copyToClipboard, isPreviewMode } from "./lib/bridge";
-import { errorMessage, restoreBlockReason } from "./lib/format";
+import { errorMessage, restoreBlockReason, restoreRiskMessage } from "./lib/format";
 import { applyTheme, normalizeTheme } from "./lib/theme";
 import type { Bootstrap, Config, MoveToTrashRequest, OnboardingInput, Page, RestoreRequest, SettingsSection, Snapshot, TaskContext, TaskProgress, TaskResult, TrashItem, TrashList, UpdateInfo } from "./lib/types";
 
@@ -105,6 +105,10 @@ function scheduleRefresh(delay = 350) {
   store.refreshTimer = setTimeout(() => { store.refreshTimer = null; void refresh(); }, delay);
 }
 
+// Kept so a restore rejected for an implausible compression ratio can be
+// retried with Force after the user confirms.
+let lastRestoreRequest: RestoreRequest | null = null;
+
 // Buffer events while the start call is pending: Wails can emit progress/result before returning its ID.
 type TaskEvent = { progress: TaskProgress } | { result: TaskResult };
 let pendingEvents: TaskEvent[] | null = null;
@@ -132,6 +136,20 @@ function receiveTaskEvent(event: TaskEvent) {
     store.taskResult = event.result;
     store.taskResultDismissed = false;
     showToast(event.result.success ? event.result.message || "任务完成" : event.result.error || event.result.message || "任务失败", event.result.success ? "success" : "error");
+    const risk = event.result.success ? "" : restoreRiskMessage(event.result.error);
+    if (risk && lastRestoreRequest) {
+      const request = lastRestoreRequest;
+      askConfirm({
+        title: "归档压缩比异常",
+        message: risk,
+        detail: "解压这类归档可能占满目标磁盘。确认空间充足后再继续；取消不会修改任何数据。",
+        confirmLabel: "仍然恢复",
+        onConfirm: async () => {
+          closeConfirm();
+          await startRestore({ ...request, force: true });
+        },
+      });
+    }
     scheduleRefresh(250);
   }
 }
@@ -260,6 +278,7 @@ export async function startRestore(request: RestoreRequest): Promise<void> {
   const blocked = restoreBlockReason(snapshot, store.boot?.key);
   if (blocked) throw new Error(blocked);
   if (request.customTarget && request.includeDesktop) throw new Error("恢复到其他目录时不能恢复系统桌面登录态。");
+  lastRestoreRequest = { ...request };
   await launchTask({ kind: "restore", archive: snapshot?.localPath, target: request.customTarget || store.boot?.dsh.sources.find((s) => s.name === "dsh")?.path, encrypted: snapshot?.encrypted, preRestoreSnapshot: request.preRestoreSnapshot }, () => api.startRestore({ ...request }));
   store.modals.restore = false;
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"DSHBackup/internal/apppath"
@@ -124,6 +125,7 @@ func TestEncryptedBackupVerifyRestore(t *testing.T) {
 	writeFile(t, filepath.Join(desktop, "Local State"), `{"changed":true}`)
 	customTarget := filepath.Join(base, "restore-target")
 	writeFile(t, filepath.Join(customTarget, "old.txt"), "existing target data")
+	writeFile(t, filepath.Join(customTarget, ".old.txt.dshbak-1234-abcd.tmp"), "stale candidate")
 	if _, err := manager.Restore(context.Background(), backup.RestoreInput{
 		TaskID: "test-restore-invalid", Config: cfg, Snapshot: result.Snapshot, IncludeDesktop: true, TargetDSH: customTarget, Force: true,
 	}); err == nil {
@@ -143,6 +145,15 @@ func TestEncryptedBackupVerifyRestore(t *testing.T) {
 	}
 	if restore.PreRestoreSnapshot == nil {
 		t.Fatal("pre-restore snapshot missing")
+	}
+	reported := false
+	for _, warning := range restore.Warnings {
+		if strings.Contains(warning, "候选文件") {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Fatalf("stale restore candidate was not reported: %v", restore.Warnings)
 	}
 	preManifest, err := manifest.Read(restore.PreRestoreSnapshot.ManifestPath)
 	if err != nil {

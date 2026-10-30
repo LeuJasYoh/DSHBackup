@@ -146,6 +146,10 @@ export function truncateMiddle(value: string, max = 68): string {
   const half = Math.floor((max - 1) / 2);
   return `${value.slice(0, half)}…${value.slice(value.length - half)}`;
 }
+export function restoreRiskMessage(error?: string): string {
+  if (!error || !error.startsWith("RESTORE_RISK:")) return "";
+  return error.slice("RESTORE_RISK:".length).trim();
+}
 export function errorMessage(error: unknown): string {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;

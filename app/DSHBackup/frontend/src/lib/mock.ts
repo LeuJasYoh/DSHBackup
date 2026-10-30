@@ -193,6 +193,9 @@ export const mockApi = {
       return {
         phases: ["precheck", ...(snapshot.encrypted ? ["decrypt"] : []), "extract", ...(input.preRestoreSnapshot ? ["snapshot"] : []), "install"],
         finish: () => {
+          if (params.get("risk") === "1" && !request.force) {
+            return { success: false, message: "恢复失败", error: "RESTORE_RISK:归档解压后约 2.0 TB，是归档大小的 800 倍。请先确认目标磁盘有足够空间，再决定是否继续。" };
+          }
           let preRestoreSnapshot: Snapshot | undefined;
           if (input.preRestoreSnapshot) {
             preRestoreSnapshot = { ...makeSnapshot(`pre-${Date.now()}`, new Date(), config), kind: "pre-restore", desktopIncluded: input.includeDesktop };

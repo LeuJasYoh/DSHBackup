@@ -17,5 +17,5 @@ func New(_ []byte, _ string, _ Callbacks) (*Tray, error) {
 	return nil, errors.New("系统托盘仅支持 Windows")
 }
 
-func (t *Tray) Close()      {}
+func (t *Tray) Close()        {}
 func (t *Tray) SetTip(string) {}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"DSHBackup/internal/backup"
 	"DSHBackup/internal/config"
 	"DSHBackup/internal/manifest"
 	"DSHBackup/internal/pathguard"
@@ -299,6 +300,11 @@ func (a *App) ExportDiagnostics() (string, error) {
 		"sources.json":   sourceRaw,
 		"snapshots.json": snapshotRaw,
 		"README.txt":     []byte("此诊断包不包含本地私钥、归档密码或 DSH 凭据内容；日志中的敏感信息会被脱敏。\n"),
+	}
+	candidates := backup.RestoreCandidates([]string{a.paths.DSHDataDir(), a.paths.DesktopStateDir()})
+	if len(candidates) > 0 {
+		header := "以下文件可能是恢复异常退出留下的候选，程序不会自动删除，请人工确认后再处理：" + "\n"
+		extras["restore-candidates.txt"] = []byte(header + strings.Join(candidates, "\n") + "\n")
 	}
 	path, err := a.logger.Export(a.paths.LogsDir, extras)
 	if err != nil {

@@ -502,6 +502,14 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 	if err != nil {
 		return RestoreResult{}, mapTaskError(err)
 	}
+	archiveSize := value.Archive.Size
+	if info, statErr := os.Stat(archivePath); statErr == nil {
+		archiveSize = info.Size()
+	}
+	riskErr := checkRestoreFootprint(validation.Bytes, archiveSize)
+	if riskErr != nil && !input.Force {
+		return RestoreResult{}, riskErr
+	}
 	entries := make(map[string]bool, len(validation.Entries))
 	for _, entry := range validation.Entries {
 		entries[entry] = true
@@ -542,6 +550,9 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 		return RestoreResult{}, mapTaskError(err)
 	}
 	warnings := append([]string{}, extractResult.Warnings...)
+	if riskErr != nil {
+		warnings = append(warnings, "归档压缩比异常，已按用户确认继续恢复")
+	}
 
 	var targets []sidecar.InstallTarget
 	if m.sourceExists(filepath.Join(extractDir, "dsh")) {
@@ -582,6 +593,13 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 				return RestoreResult{}, errors.New("多个恢复目标不能互相重叠")
 			}
 		}
+	}
+	candidateTargets := make([]string, 0, len(targets))
+	for _, target := range targets {
+		candidateTargets = append(candidateTargets, target.Path)
+	}
+	if candidates := RestoreCandidates(candidateTargets); len(candidates) > 0 {
+		warnings = append(warnings, fmt.Sprintf("恢复目标中发现 %d 个上次异常退出留下的候选文件（例如 %s）；程序不会自动删除，请确认无用后手动清理", len(candidates), candidates[0]))
 	}
 	var preSnapshot *manifest.Snapshot
 	if input.PreRestoreSnapshot {

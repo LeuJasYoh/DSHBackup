@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compressionLabel, compressionLevels, extraArgsError, validateConfig } from "./format";
+import { compressionLabel, compressionLevels, extraArgsError, restoreRiskMessage, validateConfig } from "./format";
 import type { Config } from "./types";
 
 function baseConfig(): Config {
@@ -41,6 +41,17 @@ describe("advanced 7z arguments", () => {
 
   it("still accepts the whitelisted tuning flags", () => {
     expect(extraArgsError("-md=64m -ms=on -mmt=4")).toBe("");
+  });
+});
+
+describe("restore risk errors", () => {
+  it("strips the marker the backend uses to request confirmation", () => {
+    expect(restoreRiskMessage("RESTORE_RISK:归档解压后约 2.0 TB")).toBe("归档解压后约 2.0 TB");
+  });
+
+  it("ignores ordinary errors", () => {
+    expect(restoreRiskMessage("归档 SHA-256 校验失败")).toBe("");
+    expect(restoreRiskMessage(undefined)).toBe("");
   });
 });
 

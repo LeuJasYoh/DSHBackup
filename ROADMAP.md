@@ -123,7 +123,7 @@ R1 的设计目标是把这三条一次性解决：**同卷重命名 = 移入回
 | R2 | 自研选择器组件 | M | 无 | 中（视觉一致性） | **已完成**（`95220d3`） |
 | R3 | 关闭行为 + 系统托盘 | L | R1 | 高（常驻使用形态） | **已完成**（`a70c3fb`），真机验证三种关闭行为 |
 | R4 | 应用内帮助扩写 | M | R1、R2、R3 | 中 | **已完成**（12 节带目录长文档） |
-| R5 | 审计遗留边界（W8 余项等） | L | 无 | 低可见、高稳健 | 仍待处理（见第 8 节） |
+| R5 | 审计遗留边界（W8 余项等） | L | 无 | 低可见、高稳健 | **R5-1/R5-3 已完成（1.3.1）**；R5-2 用户明确跳过；R5-4/5/6 明确不做；R5-7 由集成测试覆盖 |
 | R6 | 前端自动化测试基建 | M | R1 | 低可见、高杠杆 | **已完成**（vitest，18 个用例，已接入 build.ps1） |
 | R7 | 文档与打包（README 形态等） | S | R1–R4 | 中 | **已完成**（README / packaging / DESIGN 第 29 章） |
 | R8 | 版本与发布流程 | S | 全部 | 高 | 版本定为 **1.3.0**，已本地构建；未推送、未发布 |
@@ -623,13 +623,14 @@ case "ask":  emitClosePrompt(); return true // 前端弹出模态，用户选择
 
 ## 8. R5 审计遗留边界（上一轮未做完的）
 
-来自 `REPAIR_HANDOFF.md` 的 W8 余项与已知限制，按投入产出排序：
+来自 `REPAIR_HANDOFF.md` 的 W8 余项与已知限制，按投入产出排序。R5-1/R5-3 已在 1.3.1 完成；
+R5-2 因用户没有可用的 exFAT/SMB 介质而明确跳过，不为它编写未经验证的结论。
 
 | 编号 | 事项 | 说明 | 建议做法 |
 | --- | --- | --- | --- |
-| R5-1 | 恶意/超大归档的资源隔离 | 解压前对「声明大小 vs 实际压缩比」不设上限，超高压缩比（zip bomb 形态）可打满临时盘 | 在 `VerifyLocal` / `Restore` 前用 `7z l -slt` 的 `Size/Compressed` 比值给出预估，超过阈值（建议 200×）时要求用户显式确认；同时校验目标卷剩余空间（恢复侧已有 `DiskFree`，`internal/platform/platform_windows.go:21`） |
+| R5-1 | 恶意/超大归档的资源隔离 | **已完成（1.3.1）**：`validate_archive` 的声明总量 ≥256 MB 且压缩比 >200 时返回 `RESTORE_RISK:`，前端确认后以 `force=true` 重试；空间预检保留 | `internal/backup/restore_guard.go`、`manager.Restore` |
 | R5-2 | 跨介质矩阵 | exFAT/FAT32/SMB/网络盘/BitLocker 挂载盘未系统验证；隐藏属性、只读属性、重命名语义在非 NTFS 上不同 | 至少手工跑 exFAT(U 盘) + SMB(家用 NAS) 两条：备份→删除→回收站→找回→恢复 全流程，记录差异并落到帮助「已知限制」 |
-| R5-3 | 候选文件残留上报 | 极端退出会留下目标旁 `.dshbak-*.tmp`（已写进 README） | 启动时只**扫描并报告**（不删），在诊断小节列出可疑残留路径与大小；与 `CleanTemp` 的「只清带标记目录」原则一致 |
+| R5-3 | 候选文件残留上报 | **已完成（1.3.1）**：恢复准备扫描目标目录并加入 warnings；诊断包发现候选时写入 `restore-candidates.txt`；只报告不删除 | `backup.FindRestoreCandidates`、`ExportDiagnostics`、集成测试断言 |
 | R5-4 | Bootstrap 的活动任务快照/修订号 | `GetBootstrap` 与事件流之间没有 revision，理论上存在事件先于状态落地的窗口（现有 `pendingEvents` 缓冲已缓解大部分） | 给 `Bootstrap` 加 `revision int64`，前端丢弃 revision 更低的快照；属于加固，不是 bug 修复 |
 | R5-5 | overlapped pipe 传输 | sidecar stdio 目前是同步读写 + 取消宽限，极端大响应会占住 reader goroutine | 只在出现实测瓶颈时再做；不要为了「看起来更专业」重写 IPC |
 | R5-6 | ACL 保留 | 明确**不做**，只写文档 | 保持现状，别在 UI 或帮助里出现「保留权限」字样 |
