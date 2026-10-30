@@ -1,13 +1,27 @@
-DSH Backup 1.3.1 - 便携版
+DSH Backup 1.3.1 - 便携版 / 安装版
 
 DSH Backup 只备份 DSH 的核心数据：登录态、API Key、会话、工作区登记、附件、用量，以及可选的桌面端登录态。
 不备份项目代码、日志和缓存。备份数据只保存在本机，不上传；可选在启动时只读检查 GitHub 发行版，可在设置中关闭。
 
 使用方法
 --------
+便携版：
 1. 将整个 DSHBackup 文件夹解压到可写目录，不要放到 C:\Program Files 等只读目录。
 2. 双击 DSHBackup.exe。首次启动选择本地备份目录和是否包含桌面登录态即可。
 3. “立即备份”完成后，归档位于 DSHBackup\backups，另有同名 .manifest.json 记录 SHA-256 和加密信息。
+
+安装版：
+1. 运行 DSHBackup-1.3.1-win64-setup.exe，选择当前用户可写的安装位置；默认是
+   %LOCALAPPDATA%\Programs\DSHBackup，不请求管理员权限。
+2. 安装程序会拒绝 C:\Program Files、Windows 目录和磁盘根目录，因为这些位置无法安全保存配置和备份。
+3. 可以选择创建桌面快捷方式；开始菜单快捷方式始终创建。卸载时只删除程序文件，data 和 backups 会保留。
+
+安装版升级与卸载
+----------------
+- 升级：运行新版安装包并选择原安装目录覆盖安装，data 和 backups 会保留。
+- 卸载：Windows“设置 → 应用 → DSH Backup”，或开始菜单里的“卸载 DSH Backup”。
+- 卸载后程序文件会被删除，但安装目录中的 data（配置、密钥）和 backups（本地备份）会保留；
+  如需彻底删除，请手动删除整个安装目录。
 
 本地加密与密钥
 --------------
@@ -40,9 +54,11 @@ data\keys\               本地公钥/私钥
 data\logs\               运行日志（已脱敏）
 data\temp\               任务临时文件（启动时只清理本程序标记的目录）
 data\webview2\           WebView2 用户数据
+uninstall.exe            卸载程序（仅安装版）
 
 注意：删除整个应用目录会连同默认本地备份和本地私钥一起删除。重要备份请另存到其他磁盘。
-更新时请替换程序与 tools，不要删除 data 和 backups。
+便携版更新时请替换程序与 tools，不要删除 data 和 backups；安装版直接运行新版安装包覆盖安装，
+升级也会保留 data 和 backups。卸载后如需彻底删除，请手动删除整个安装目录。
 
 从 1.3.0 升级
 -------------
@@ -105,6 +121,7 @@ data\webview2\           WebView2 用户数据
 --------
 - Windows 10/11 x64
 - Microsoft Edge WebView2 Runtime（Windows 11 通常已内置）
+- 安装包未签名，Windows SmartScreen 可能提示“未知发布者”；安装程序不请求管理员权限
 
 隐私与边界
 ----------

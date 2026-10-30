@@ -1,10 +1,10 @@
 # DSH Backup
 
-Windows 便携版 DSH 核心数据备份工具。备份整个 `.dsh` 目录（凭据、用量、登录态与配置、会话、附件、角色与语音），
+Windows 本地 DSH 核心数据备份工具，提供便携 ZIP 和 NSIS 安装包。备份整个 `.dsh` 目录（凭据、用量、登录态与配置、会话、附件、角色与语音），
 只排除 `logs`、`cache`、`electron-user-data`；外加可选的桌面登录态，不读取项目代码。
 
 - 设计文档：`../../DESIGN.md`
-- 便携版产物：`../../dist/DSHBackup/`
+- 便携目录：`../../dist/DSHBackup/`
 
 ## 技术栈
 
@@ -22,8 +22,9 @@ Windows 便携版 DSH 核心数据备份工具。备份整个 `.dsh` 目录（�
 - Rust stable MSVC + Visual Studio Build Tools（C++ 桌面开发）
 - Wails CLI 2.15：`go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 - 7-Zip 26.05 Extra 解压到 `../../tools/7zip/7z2605-extra`
+- NSIS 3.x：`makensis.exe` 在 PATH 中，或用 `-NsisPath` 指定
 
-## 构建便携版
+## 构建便携版与安装包
 
 ```powershell
 cd app\DSHBackup
@@ -36,8 +37,15 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - `dist\DSHBackup\dsh-backup-core.exe`
 - `dist\DSHBackup\tools\7za.exe`
 - `dist\DSHBackup-<version>-win64.zip`
+- `dist\DSHBackup-<version>-win64-setup.exe`
 
-便携版目录自带 README、第三方许可证和 7-Zip 来源说明。
+便携版目录自带 README、第三方许可证和 7-Zip 来源说明。安装包由 `packaging\installer.nsi` 生成，
+默认装到 `%LOCALAPPDATA%\Programs\DSHBackup`，可改安装位置、可选桌面快捷方式；卸载保留 `data` 和 `backups`。
+只需要便携版时加 `-SkipInstaller`。不重新编译应用、只重建安装包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\build-installer.ps1 -Version 1.3.1
+```
 
 ## 开发
 
@@ -100,7 +108,7 @@ scheduler.go             每日/每周计划
 internal/                业务与底层适配
 frontend/                Vue 3 UI
 sidecar/                 Rust JSON-RPC sidecar
-packaging/               便携版说明与第三方许可证
+packaging/               便携/安装版说明、NSIS 脚本与第三方许可证
 ```
 
 ## 安全边界
@@ -121,6 +129,7 @@ packaging/               便携版说明与第三方许可证
 - 删除归档只是移到备份目录内的 `.dshbackup-trash`，到期或手动清空才释放空间；切换备份目录不会自动清理旧目录的回收站
 - 系统托盘用 `Shell_NotifyIcon` 自建（Wails v2 没有 Windows 托盘后端）；关闭行为保存在配置里
 - 不自动安装更新（可选只读检查 GitHub 发行版并提示）、不提供代码签名、VSS、增量/去重、Linux UI
+- 安装包为每用户安装、不请求管理员权限，不支持 `Program Files`；未签名，SmartScreen 可能提示未知发布者
 - 恢复逐文件提交，不是整树事务；中途失败不会自动回滚已提交文件；不保存/恢复自定义 ACL
 - 极端退出可能留下目标旁的 `.dshbak-*.tmp` 候选，程序不会自动删除无法确认归属的外部文件
 - 暂存使用独立复制而非硬链接，需要额外临时空间和更长时间

@@ -1,6 +1,6 @@
 # DSH Backup
 
-Windows 便携版 DSH 核心数据备份工具。备份数据只保存在本机，不上传；可选在启动时只读检查 GitHub 发行版。使用 7-Zip 压缩（含仅存储档），可选 AES-256 加密。
+Windows 本地 DSH 核心数据备份工具，提供便携 ZIP 和安装包两种形式。备份数据只保存在本机，不上传；可选在启动时只读检查 GitHub 发行版。使用 7-Zip 压缩（含仅存储档），可选 AES-256 加密。
 
 - 设计文档：[DESIGN.md](DESIGN.md)
 - 开发说明：[app/DSHBackup/README.md](app/DSHBackup/README.md)
@@ -23,7 +23,7 @@ Windows 便携版 DSH 核心数据备份工具。备份数据只保存在本机�
 - 删除归档 = 瞬时移入备份目录内的回收站（同盘改名，可连续删除），默认可找回 7 天，保留策略淘汰的旧备份也进入回收站；可在设置里选择「永不」关闭自动清理
 - 关闭行为可选「每次询问 / 直接退出 / 最小化到系统托盘」；留在托盘时计划备份照常运行，再次启动会唤回窗口
 - 备份过程逐步列出并显示每步耗时，长路径鼠标移上去可复制
-- Wails 2.15 + WebView2 + Vue3/TypeScript，便携版免安装
+- Wails 2.15 + WebView2 + Vue3/TypeScript；便携版免安装，安装包可选桌面快捷方式、默认装到当前用户目录
 
 ## 技术栈
 
@@ -43,11 +43,11 @@ Vue3/TS UI → Wails/WebView2
 - Go：配置、任务、备份/恢复编排、计划任务
 - Rust：文件暂存、7z 编排、SHA-256、age 密钥封装、解压安全校验
 - 7-Zip：固定版本与 SHA-256，随包分发，附 License
-- 数据目录：便携版应用目录下 `data/` 与 `backups/`
+- 数据目录：便携版和安装版都把 `data/` 与 `backups/` 放在应用目录；安装包默认装到 `%LOCALAPPDATA%\Programs\DSHBackup`
 
 ## 构建
 
-要求 Windows 10/11 x64、Go 1.26+、Node 24+、Rust stable MSVC、Visual Studio Build Tools、Wails CLI 2.15，以及 `tools/7zip/7z2605-extra` 中的官方 7-Zip CLI。
+要求 Windows 10/11 x64、Go 1.26+、Node 24+、Rust stable MSVC、Visual Studio Build Tools、Wails CLI 2.15、NSIS 3.x（`makensis.exe`），以及 `tools/7zip/7z2605-extra` 中的官方 7-Zip CLI。
 
 ```powershell
 cd app\DSHBackup
@@ -68,11 +68,31 @@ dist\DSHBackup\
   7-Zip-SOURCE.txt
   BUILD.txt
 dist\DSHBackup-<version>-win64.zip
+dist\DSHBackup-<version>-win64-setup.exe
 ```
 
-构建脚本会校验 7za SHA-256、构建静态 CRT Rust sidecar、运行 Wails 构建，并在**独立干净暂存目录**组装便携版。
-ZIP 只含上面 9 个运行文件，不会把配置、密钥或归档打进包；升级已有安装时只更新运行文件，`data` 和 `backups`
-仍保留在原便携目录中（脚本不再删除它们；测试过用哨兵文件验证）。
+构建脚本会校验 7za SHA-256、构建静态 CRT Rust sidecar、运行 Wails 构建，并在**独立干净暂存目录**组装便携版，
+再用 NSIS 生成安装包。ZIP 和安装包都只含上面 9 个运行文件，不会把配置、密钥或归档打进包；升级已有安装时只更新
+运行文件，`data` 和 `backups` 仍保留在原目录中（脚本和安装程序都不会主动删除；测试过用哨兵文件验证）。
+
+安装包默认安装到 `%LOCALAPPDATA%\Programs\DSHBackup`，目录页可以更改；因为配置、密钥和备份都放在安装目录，
+安装程序会拒绝 `Program Files`、Windows 目录和磁盘根目录，并在离开目录页时验证目标可写。安装包是每用户安装，
+不请求管理员权限；可选择创建桌面快捷方式（默认勾选，取消后会记住），始终创建开始菜单快捷方式。
+卸载只删除程序文件，保留 `data` 和 `backups`，需要彻底删除时请手动删除安装目录。
+
+只需要便携版时可以跳过安装包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -SkipInstaller
+# 或指定 makensis 路径
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -NsisPath "D:\NSIS\Bin\makensis.exe"
+```
+
+NSIS 安装脚本在 `app/DSHBackup/packaging/installer.nsi`，也可以单独构建（不重新编译应用）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\build-installer.ps1 -Version 1.3.1
+```
 
 ## 测试
 
@@ -111,6 +131,7 @@ Go 集成测试会在临时目录里跑完整的「加密备份 → 校验 → �
 
 - 不做项目代码备份、多账号、增量/去重；首版不做 Linux UI
 - 不自动安装更新；启用检查时仅提示 GitHub 发行版并可在浏览器查看。不提供代码签名、VSS
+- 安装包未签名，Windows SmartScreen 可能提示未知发布者；安装程序不请求管理员权限，也不支持安装到 `Program Files`
 - 恢复逐文件提交，不是整树事务；中途失败时已提交文件不会自动回滚。不保存/恢复自定义 ACL，替换文件使用目标目录继承的权限
 - 恢复前会按归档声明的总大小预检空间；压缩比超过 200 倍且大于 256 MB 时要求确认。目标目录中的 `.dshbak-*.tmp` 残留只会被报告，不会自动删除
 - 断电或强制结束可能留下 `.dshbak-*.tmp` 恢复候选；下次恢复会报告并写进诊断包，但程序不会自动删除无法确认归属的外部文件

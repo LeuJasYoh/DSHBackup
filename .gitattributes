@@ -8,9 +8,11 @@
 *.json text eol=lf
 *.md text eol=lf
 *.ps1 text eol=crlf
+*.nsi text eol=crlf
 *.exe binary
 *.dll binary
 *.ico binary
+*.bmp binary
 *.png binary
 *.jpg binary
 *.gif binary

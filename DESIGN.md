@@ -2,7 +2,7 @@
 
 - 版本：v1.3.1（本地优先）
 - 日期：2026-10-30
-- 状态：v1.3.1 补上恢复前的体积预检与候选残留报告（第 30 章）。v1.3.0 引入回收站删除语义、关闭行为与系统托盘、自研选择器与带目录的应用内帮助（第 29 章）。v1.2.1 在 v1.2.0 的纸墨视觉与交互语言之上，把设置页改成目录导航（第 27 章）。v1.2.0 在 v1.1.0 的纯本地基础上重做了界面与交互（第 24、25 章）。第 10、20、21 章记录的云端设计已废弃，仅作历史决策参考
+- 状态：v1.3.1 补上恢复前的体积预检与候选残留报告（第 30 章），发行版增加 NSIS 安装包变体（第 31 章）。v1.3.0 引入回收站删除语义、关闭行为与系统托盘、自研选择器与带目录的应用内帮助（第 29 章）。v1.2.1 在 v1.2.0 的纸墨视觉与交互语言之上，把设置页改成目录导航（第 27 章）。v1.2.0 在 v1.1.0 的纯本地基础上重做了界面与交互（第 24、25 章）。第 10、20、21 章记录的云端设计已废弃，仅作历史决策参考
 - 目标平台：Windows 10/11（首版）；Linux 暂不实现，预留接口
 
 ---
@@ -52,7 +52,7 @@
 
 - 技术栈：Rust 底层 + Go 业务 + WebView2 + Vue3/TypeScript GUI
 - 首版只做 Windows
-- 正式版只发便携版；应用放在可写目录，不提供 Program Files 安装模式
+- 发行版同时提供便携 ZIP 和每用户 NSIS 安装包；两者都把数据和备份放在应用目录，不提供 Program Files 安装模式
 - 使用 Wails 作为 WebView2 宿主
 - Rust 采用独立 sidecar 进程，通过 JSON-RPC/stdio 与 Go 通信；不通过 CGO/DLL 链接
 - 压缩使用官方 7-Zip CLI 作为外部进程，不在 Rust 中链接 C/C++ 库
@@ -343,7 +343,7 @@ Rust 底层 sidecar
 
 ## 8. 本地存储布局
 
-按用户要求，正式版为便携版，临时文件、日志和默认本地备份都放在应用目录：
+便携版和安装版使用同一套目录布局，临时文件、日志和默认本地备份都放在应用目录：
 
 ```text
 <应用目录>\
@@ -373,9 +373,9 @@ Rust 底层 sidecar
 
 前提：
 
-- **正式版仅提供便携版**，应用必须放在用户可写目录；不支持 `C:\Program Files` 等只读/共享目录
+- 便携版和安装版都要求应用目录可写；安装版默认装到 `%LOCALAPPDATA%\Programs\DSHBackup`，目录页可改，不提供 `C:\Program Files` 等只读/共享目录
 - 启动时检查应用目录写权限和磁盘空间；不可写时阻止备份，并提示用户移动到可写目录
-- 更新器不能删除 `data`、`backups` 和配置
+- 更新器不能删除 `data`、`backups` 和配置；安装包覆盖升级同样只替换程序文件
 - 用户删除应用目录会连同默认本地备份一起删除；界面要提示另存离线副本，卸载/升级流程不得主动清除 `backups`
 
 ### 8.1 临时文件安全
@@ -675,7 +675,7 @@ Rust 底层 sidecar
 - 只使用鲸鱼图形，不加圆角方块底座
 - 透明背景；不引用外部 URL 或 CDN
 - 应用图标、favicon、侧栏 Logo、首启 Logo、关于页 Logo 共用同一套本地资源
-- 未来打包 Wails 时由 `icon.png`/`icon.ico` 生成安装包图标
+- 安装包（NSIS）使用 `build/windows/icon.ico` 作为安装/卸载图标，并用 `packaging/installer-wizard.bmp` 作为向导侧图
 
 ---
 
@@ -707,7 +707,7 @@ Rust 底层 sidecar
 |---|---|
 | 7z LGPL/安全更新 | 固定版本、许可证、源码链接、更新流程、CVE 跟踪 |
 | 7z 进程参数/编码问题 | 参数数组、UTF-8 列表、绝对路径、退出码、测试特殊路径 |
-| 程序目录不可写 | 只发便携版；启动时检查写权限；不支持 Program Files/只读目录，提示用户移动应用 |
+| 程序目录不可写 | 便携版与安装版都要求可写目录；安装程序拒绝 Program Files/Windows/盘符根目录并在目录页验证写入；启动时再次检查写权限 |
 | WebView2 写入用户目录 | 配置 userDataFolder；接受 Runtime 本身为系统组件 |
 | 本地备份与安装目录同生共死 | 默认 `应用目录\backups`；更新/卸载必须保留；界面提示另存离线副本 |
 | 本地未加密泄露 | 默认关闭时提示风险；ACL、不要放共享/同步目录；可选择加密 |
@@ -727,7 +727,7 @@ Rust 底层 sidecar
 ### 15.1 本地
 
 - 首启默认仅本地，不要求 GitHub、不发起网络请求
-- 便携版启动时检查应用目录写权限；默认备份目录为 `应用目录\backups`
+- 便携版和安装版启动时检查应用目录写权限；默认备份目录为 `应用目录\backups`
 - 能完整备份 `.dsh` 核心数据和 AppData 必需项
 - 能生成 manifest 和 SHA-256
 - 能恢复并验证关键文件；恢复覆盖现有 `.dsh`
@@ -837,8 +837,8 @@ app\DSHBackup\
     sidecar  Rust JSON-RPC 客户端
   sidecar\   Rust 独立进程（文件暂存、7z、age 密钥、哈希、解压路径校验）
   frontend\  Vue3 + TypeScript
-  packaging\ 便携版 README / 第三方许可证 / 7-Zip 来源说明
-  build.ps1  一键构建便携版
+  packaging\ 便携/安装版 README、NSIS 脚本、向导图、第三方许可证 / 7-Zip 来源说明
+  build.ps1  一键构建便携版与安装包
 ```
 
 - 构建命令：`powershell -ExecutionPolicy Bypass -File build.ps1`
@@ -1423,3 +1423,44 @@ o["--offset-distance"] = t ? e.itemLineLengths[i][0]   // 向上：弧长走到�
 
 - 跨介质矩阵（exFAT / SMB / 外接盘）按用户要求跳过，不写未经验证的结论。
 - Bootstrap revision、overlapped pipe、ACL 保留仍然不做；它们不改变用户可见行为。
+
+## 31. v1.3.1 发行版增加 NSIS 安装包（同一应用二进制）
+
+安装包是发行形式的变化，不改应用版本、备份格式或配置。便携 ZIP 与安装包包含同一组 9 个运行文件。
+
+### 31.1 安装模型
+
+- **每用户安装**：`RequestExecutionLevel user`，写 `HKCU`，不请求管理员权限。
+- 默认目录 `%LOCALAPPDATA%\Programs\DSHBackup`，目录页可以更改；`InstallDirRegKey` 让覆盖安装默认沿用旧目录。
+- 因为 `data` 和 `backups` 固定在应用目录，安装程序必须保证目录可写：
+  - 拒绝磁盘/共享根目录、`Windows`、`Program Files`（含 x86 与 x64）。
+  - 离开目录页时创建目录并写一个短命探测文件；失败就阻止继续。
+  - 静默安装走同一套检查，失败时返回退出码 3。
+- 旧版本安装在不同目录时提示“不会迁移 data 和 backups”，建议装回原目录。
+
+### 31.2 组件与快捷方式
+
+- 可选组件“桌面快捷方式”，默认勾选；选择写入 `HKCU\Software\DSHBackup\DesktopShortcut`，覆盖安装时恢复上次选择。
+- 开始菜单快捷方式始终创建，卸载快捷方式位于同一文件夹。
+- 卸载信息写入 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\DSHBackup`，显示版本、发布者、安装位置、卸载与静默卸载命令。
+- 安装包使用 `build/windows/icon.ico` 作为安装/卸载图标，`packaging/installer-wizard.bmp` 作为欢迎/完成页侧图。
+
+### 31.3 运行中与数据保留
+
+- 安装/卸载前用 `tasklist` 检查 `DSHBackup.exe` 与 `dsh-backup-core.exe`；运行中时交互模式提示先退出，
+  静默模式直接退出（安装返回 1618），避免覆盖正在使用的程序或中断备份。
+- 覆盖安装只替换 9 个运行文件，不删除 `data`、`backups` 或用户放在目录里的其他文件。
+- 卸载只删除程序文件、快捷方式和注册表项，保留 `data` 与 `backups`；完成页与 `README.txt` 都提示需要手动删除安装目录。
+- 安装包未做代码签名，SmartScreen 可能提示未知发布者；这与应用的签名边界一致。
+
+### 31.4 构建与验证
+
+- `packaging/installer.nsi` 负责安装/卸载脚本；`packaging/build-installer.ps1` 校验源目录的 9 个文件与
+  `BUILD.txt` 版本后调用 `makensis`；`build.ps1` 在干净暂存目录组装完成后自动生成 ZIP 和安装包，
+  可用 `-SkipInstaller` 跳过，或用 `-NsisPath` 指定 `makensis.exe`。
+- 实测（在临时目录，不触碰真实 `%USERPROFILE%\.dsh`）：
+  - 静默安装、覆盖安装、静默卸载均成功；覆盖安装与卸载后 `data`/`backups` 哨兵文件保留，程序文件与快捷方式被移除。
+  - 桌面快捷方式取消后会记住；再次静默覆盖安装不会重建。
+  - 应用运行时安装/卸载返回 1618 并拒绝继续；Program Files 与磁盘根目录被拦截。
+  - 含空格路径的安装、卸载与输出目录通过。
+  - 安装界面（欢迎、目录、组件、完成、卸载确认）在真实 WebView/桌面环境中截图核对。

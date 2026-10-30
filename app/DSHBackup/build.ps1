@@ -3,7 +3,9 @@
 param(
     [string]$Version = "1.3.1",
     [switch]$SkipFrontendInstall,
-    [switch]$SkipZip
+    [switch]$SkipZip,
+    [switch]$SkipInstaller,
+    [string]$NsisPath = ""
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -136,6 +138,17 @@ dsh-backup-core.exe SHA-256: $sidecarHash
         Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
         Write-Host "ZIP: $zipPath" -ForegroundColor Green
     }
+
+    $setupPath = Join-Path $distRoot "DSHBackup-$Version-win64-setup.exe"
+    if (-not $SkipInstaller) {
+        Write-Step "从干净暂存目录生成安装包"
+        $installerScript = Join-Path $packaging "build-installer.ps1"
+        if (-not (Test-Path $installerScript)) { throw "找不到安装包脚本：$installerScript" }
+        $installerArgs = @{ Version = $Version; Source = $stageDir; Output = $setupPath }
+        if ($NsisPath) { $installerArgs.NsisPath = $NsisPath }
+        & $installerScript @installerArgs
+        Write-Host "安装包：$setupPath" -ForegroundColor Green
+    }
 } finally {
     if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
 }
@@ -143,3 +156,4 @@ dsh-backup-core.exe SHA-256: $sidecarHash
 Write-Host ""
 Write-Host "便携版目录：$outDir" -ForegroundColor Green
 Write-Host "主程序：$(Join-Path $outDir 'DSHBackup.exe')" -ForegroundColor Green
+if (-not $SkipInstaller) { Write-Host "安装包：$setupPath" -ForegroundColor Green }
