@@ -65,14 +65,23 @@ const directoryChanged = computed(() => draft.value?.backupDir !== boot.value.co
 
 /* 备份域：身份与会话不可关闭，插件依赖与运行环境可各自取舍。 */
 const dshSource = computed(() => boot.value.dsh.sources.find((source) => source.name === "dsh"));
+const desktopSource = computed(() => boot.value.dsh.sources.find((source) => source.name !== "dsh"));
+// 桌面登录态开启时会归进 core 那份归档，所以这里的体积与文件数要把两个根加起来。
+const desktopCounted = computed(() => !!draft.value?.includeDesktop && !!desktopSource.value?.exists);
 function domainBytes(domain: DomainName): number {
-  return dshSource.value?.domains?.find((stat) => stat.domain === domain)?.bytes ?? 0;
+  const base = dshSource.value?.domains?.find((stat) => stat.domain === domain)?.bytes ?? 0;
+  return domain === "core" && desktopCounted.value ? base + (desktopSource.value?.bytes ?? 0) : base;
 }
 function domainFiles(domain: DomainName): number {
-  return dshSource.value?.domains?.find((stat) => stat.domain === domain)?.files ?? 0;
+  const base = dshSource.value?.domains?.find((stat) => stat.domain === domain)?.files ?? 0;
+  return domain === "core" && desktopCounted.value ? base + (desktopSource.value?.files ?? 0) : base;
 }
 const scopeRows = computed(() => [
-  { key: "core", label: "身份与配置", desc: "凭据、桌面登录态、插件声明与清单、用量账本、工作区索引", files: domainFiles("core"), bytes: domainBytes("core"), locked: true },
+  {
+    key: "core", label: "身份与配置",
+    desc: `凭据、插件声明与清单、用量账本、工作区索引${desktopCounted.value ? "；已开启的桌面登录态也存进这一份" : "；桌面登录态未开启"}`,
+    files: domainFiles("core"), bytes: domainBytes("core"), locked: true,
+  },
   { key: "sessions", label: "会话与附件", desc: "会话日志与其引用的图片正文，两者必须同进同出", files: domainFiles("sessions"), bytes: domainBytes("sessions"), locked: true },
   { key: "plugins", label: "插件依赖", desc: "node_modules 本体；关闭后恢复需联网执行 pnpm install 重建", files: domainFiles("plugins"), bytes: domainBytes("plugins"), locked: false },
   { key: "runtime", label: "运行环境副本", desc: "应用把自己目录里的 python/node/pnpm 复制到 .dsh 的一份，首次使用 Office 技能即在本地重新复制，无需网络", files: domainFiles("runtime"), bytes: domainBytes("runtime"), locked: false },

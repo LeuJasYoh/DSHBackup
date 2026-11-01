@@ -97,6 +97,8 @@
 | `plugins` 插件依赖 | `profiles/*/node_modules/**`、`profiles/node_modules/**` | 插件包本体。可由随包 pnpm 依 `package.json` + `pnpm-lock.yaml` 重装，但需要联网或本机 pnpm store；实测内含 65.8 MiB 硬链接造成的重复计入 | **默认进备份**（实测 425.0 MiB） |
 | `runtime` 运行环境副本 | `dsh-runtimes/**` | 应用把自身 `resources/runtime/primary-runtime` 复制进 home 的一份 python/node/pnpm。首次调用 `load_workspace_dependencies`（Office 类技能）时在本地重新复制，**不需要网络** | **默认不备份**（实测 257.9 MiB） |
 
+`core` 与桌面登录态的关系：`%APPDATA%\@deepseek-ai\dsh-desktop` 是否进备份由「包含桌面登录态」开关决定（可选项）；一旦开启，它的内容会归进 `core` 那一份归档，而不是单独成档。所以「恒定备份」指的是 `core` 这一份归档永远生成，不代表桌面登录态永远被备份。
+
 恒定排除（派生数据，可自愈或可重新取得）：
 
 - `logs/`：旧日志与诊断记录
