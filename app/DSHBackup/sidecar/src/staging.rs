@@ -55,10 +55,16 @@ impl StageRoot {
             .to_string_lossy()
             .replace('\\', "/")
             .to_ascii_lowercase();
-        let segments: Vec<&str> = normalized.split('/').filter(|value| !value.is_empty()).collect();
+        let segments: Vec<&str> = normalized
+            .split('/')
+            .filter(|value| !value.is_empty())
+            .collect();
         for rule in &self.domain_rules {
             for prefix in &rule.prefixes {
-                let prefix = prefix.replace('\\', "/").trim_matches('/').to_ascii_lowercase();
+                let prefix = prefix
+                    .replace('\\', "/")
+                    .trim_matches('/')
+                    .to_ascii_lowercase();
                 if prefix.is_empty() {
                     continue;
                 }
@@ -210,7 +216,12 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
         let exclude_prefix: HashSet<String> = root
             .exclude_prefix
             .iter()
-            .map(|value| value.replace('\\', "/").trim_matches('/').to_ascii_lowercase())
+            .map(|value| {
+                value
+                    .replace('\\', "/")
+                    .trim_matches('/')
+                    .to_ascii_lowercase()
+            })
             .filter(|value| !value.is_empty())
             .collect();
         let exclude_name: HashSet<String> = root
@@ -330,7 +341,10 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
                 size: meta.len(),
                 accessed: filetime::FileTime::from_last_access_time(&meta),
                 modified: filetime::FileTime::from_last_modification_time(&meta),
-                created: meta.created().ok().map(filetime::FileTime::from_system_time),
+                created: meta
+                    .created()
+                    .ok()
+                    .map(filetime::FileTime::from_system_time),
             });
         }
         if filtered_reparse > 0 {
@@ -787,7 +801,9 @@ mod tests {
             "runtime/dsh/dsh-runtimes/dsh-primary-runtime/runtime.json",
         ] {
             assert!(
-                staging.join(expected.replace('/', std::path::MAIN_SEPARATOR_STR)).is_file(),
+                staging
+                    .join(expected.replace('/', std::path::MAIN_SEPARATOR_STR))
+                    .is_file(),
                 "缺少 {}",
                 expected
             );
