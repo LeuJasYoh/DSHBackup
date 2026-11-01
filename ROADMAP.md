@@ -850,6 +850,9 @@ Git-for-Windows 装进 profile（392 MiB）。因此本轮的修法是"按能否
   "反向开关"、"按域淘汰只动插件域"、"恢复后 mtime 回到源值"。
 - 真机只读核对：`DSHBACKUP_REAL_SCAN=1 go test . -run RealHomeDomainPreview` 输出默认配置下
   计入 566.6 MiB / 10,409 文件，跳过 276.5 MiB / 6,444 文件。
+- **1.4.0 的验收漏跑了一条**：第 12 节要求的 `cargo fmt --check` 在最后一次改 Rust 之后没再执行，
+  发行版带着 4 处换行偏差发出去了。1.4.1 补上（纯格式，无语法变化），改完整套装重新跑过：
+  Go `-race -count=1` 全绿、`cargo fmt --check` + clippy + 14 例测试全绿、`vue-tsc` + 21 例 `vitest` 全绿。
 
 ### 17.3 还剩
 
