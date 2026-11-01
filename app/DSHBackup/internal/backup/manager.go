@@ -177,7 +177,7 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 	}
 	report("precheck", 2, "扫描源目录", 0, 0)
 	stageResult, err := m.client.Stage(ctx, input.TaskID, stagingDir, sources, func(event sidecar.Progress) {
-		percent := 3 + (clamp(event.Percent, 0, 10)-2)/8*11
+		percent := 3 + clamp(event.Percent, 0, 10)/10*11
 		report("stage", percent, event.Message, event.BytesDone, event.BytesTotal)
 	})
 	if err != nil {
@@ -225,11 +225,6 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 	compressorArgs := sevenparams.BuildArgs(input.Config.Compression.Level, input.Config.Compression.DictionaryMB, input.Config.Compression.Threads, input.Config.Compression.ExtraArgs)
 	hostname, _ := os.Hostname()
 	created := time.Now().Truncate(time.Second)
-	id, created, err := uniqueID(input.Config.BackupDir, created)
-	if err != nil {
-		return BackupResult{}, err
-	}
-
 	// 恢复前快照按目标整体存档；日常备份按域各成一份归档。只有拆开才能按域
 	// 淘汰旧份、按域挑选恢复，也不会为了少留一份插件依赖而重写整个快照。
 	works := make([]domainWork, 0, len(stageResult.Domains)+1)
@@ -257,6 +252,15 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 	sort.SliceStable(works, func(left, right int) bool {
 		return domainOrder(works[left].name) < domainOrder(works[right].name)
 	})
+
+	domainNames := make([]string, 0, len(works))
+	for _, work := range works {
+		domainNames = append(domainNames, work.name)
+	}
+	id, created, err := uniqueID(input.Config.BackupDir, created, domainNames)
+	if err != nil {
+		return BackupResult{}, err
+	}
 
 	encrypted := input.Config.EncryptionLocal
 	if encrypted {
@@ -305,8 +309,12 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 			}
 		}
 
+		// 每份归档按自己的字节占比拿到 14→90 之间的一段，段内再分压缩/校验/落盘，
+		// 否则多份归档会让进度条来回跳。
 		share := float64(maxInt64(work.bytes, 1)) / float64(grandTotal)
-		base := 14 + 62*float64(completed)/float64(grandTotal)
+		spanStart := 14 + 76*float64(completed)/float64(grandTotal)
+		width := 76 * share
+		base := spanStart
 		message := "压缩 " + label
 		if len(works) > 1 {
 			message = fmt.Sprintf("压缩 %s（%d/%d）", label, index+1, len(works))
@@ -320,7 +328,7 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 			Compression: compressor,
 			TotalBytes:  work.bytes,
 		}, func(event sidecar.Progress) {
-			percent := base + 62*share*clamp(event.Percent, 0, 100)/100
+			percent := spanStart + width*0.6*clamp(event.Percent, 0, 100)/100
 			report("compress", percent, label+" "+event.Message, completed+event.BytesDone, stageResult.Bytes)
 		})
 		if backupErr != nil {
@@ -336,10 +344,10 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 
 		verified := false
 		if input.Config.VerifyAfterBackup || protection {
-			start := 76 + 8*float64(completed)/float64(grandTotal)
+			start := spanStart + width*0.6
 			report("verify", start, "校验归档完整性："+label, completed, stageResult.Bytes)
 			testResult, testErr := m.client.TestArchive(ctx, input.TaskID, m.sevenZip, outputPath, password, func(event sidecar.Progress) {
-				report("verify", start+0.08*clamp(event.Percent, 0, 100), event.Message, completed+event.BytesDone, stageResult.Bytes)
+				report("verify", start+width*0.35*clamp(event.Percent, 0, 100)/100, event.Message, completed+event.BytesDone, stageResult.Bytes)
 			})
 			if testErr != nil {
 				return BackupResult{}, mapTaskError(testErr)
@@ -359,7 +367,7 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 				}
 			}
 		} else {
-			report("verify", 86, "已跳过完整性测试", backupResult.Size, backupResult.Size)
+			report("verify", spanStart+width*0.95, "已跳过完整性测试", backupResult.Size, backupResult.Size)
 		}
 		if encrypted {
 			unwrapped, unwrapErr := m.client.UnwrapPassword(ctx, m.paths.KeysDir, encryption.WrappedPassword)
@@ -371,7 +379,7 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 			}
 		}
 		if verified && input.Config.VerifyAfterBackup {
-			report("verify", 86, label+" 校验通过", completed, stageResult.Bytes)
+			report("verify", spanStart+width*0.95, label+" 校验通过", completed, stageResult.Bytes)
 		}
 
 		captureStatus := "complete"
@@ -401,6 +409,7 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 		if free.Free < uint64(backupResult.Size)+16*1024*1024 {
 			return rollback(fmt.Sprintf("备份目录空间不足以写入 %s（可用 %s）", archiveName, formatBytes(int64(free.Free))))
 		}
+		report("save", spanStart+width*0.97, "写入备份目录："+archiveName, backupResult.Size, backupResult.Size)
 		if moveErr := moveFile(ctx, outputPath, archivePath); moveErr != nil {
 			return rollback("写入本地备份失败：" + moveErr.Error())
 		}
@@ -1425,24 +1434,35 @@ func hasPrefix(set map[string]bool, prefix string) bool {
 	return false
 }
 
-func uniqueID(dir string, created time.Time) (string, time.Time, error) {
+// uniqueID 生成秒级快照 ID。必须检查该 ID 下每一份可能落盘的名字：分域之后
+// 归档名带域名，只查 1.x 的裸名字会漏判，同一秒内的两次备份会互相覆盖。
+func uniqueID(dir string, created time.Time, domains []string) (string, time.Time, error) {
 	for attempt := 0; attempt < 120; attempt++ {
 		id := manifest.NewID(created)
-		archive := filepath.Join(dir, manifest.ArchiveName(id))
-		archiveMissing := false
-		if _, err := os.Stat(archive); errors.Is(err, os.ErrNotExist) {
-			archiveMissing = true
-		}
-		manifestMissing := false
-		if _, err := os.Stat(manifest.ManifestPath(archive)); errors.Is(err, os.ErrNotExist) {
-			manifestMissing = true
-		}
-		if archiveMissing && manifestMissing {
+		if !snapshotIDTaken(dir, id, domains) {
 			return id, created, nil
 		}
 		created = created.Add(time.Second)
 	}
 	return "", created, errors.New("无法生成唯一的备份 ID")
+}
+
+func snapshotIDTaken(dir, id string, domains []string) bool {
+	names := make([]string, 0, len(domains)+1)
+	names = append(names, manifest.ArchiveName(id)) // 旧版单归档的名字也要避开
+	for _, domain := range domains {
+		names = append(names, manifest.DomainArchiveName(id, domain))
+	}
+	for _, name := range names {
+		archive := filepath.Join(dir, name)
+		if _, err := os.Stat(archive); err == nil {
+			return true
+		}
+		if _, err := os.Stat(manifest.ManifestPath(archive)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func randomPassword() (string, error) {

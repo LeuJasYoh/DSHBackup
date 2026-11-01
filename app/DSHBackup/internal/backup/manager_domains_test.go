@@ -267,3 +267,35 @@ func TestRestoreRejectsMissingDomainSelection(t *testing.T) {
 		t.Fatal("请求恢复一个不存在于本快照的域时必须报错，不能静默跳过")
 	}
 }
+
+// TestBackToBackBackupsGetDistinctIDs 盯住分域后最容易复发的坑：
+// ID 是秒级的，查重若只看旧版裸归档名，同一秒内的两次备份会撞名并互相覆盖。
+func TestBackToBackBackupsGetDistinctIDs(t *testing.T) {
+	_, paths, manager := setupDomainsFixture(t)
+	cfg := fixtureConfig(paths)
+	first, err := manager.Backup(context.Background(), backup.BackupInput{
+		TaskID: "same-second-1", Config: cfg, Kind: manifest.KindManual, Force: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Backup(context.Background(), backup.BackupInput{
+		TaskID: "same-second-2", Config: cfg, Kind: manifest.KindManual, Force: true,
+	})
+	if err != nil {
+		t.Fatalf("同一秒内的第二次备份失败（多半是 ID 查重没按域来）：%v", err)
+	}
+	if first.Snapshot.ID == second.Snapshot.ID {
+		t.Fatalf("两次备份拿到了同一个 ID：%s", first.Snapshot.ID)
+	}
+	if len(second.ArchivePaths) < 2 {
+		t.Fatalf("第二次备份应落多份归档，实际 %v", second.ArchivePaths)
+	}
+	listed, _, err := manager.ListLocal(cfg.BackupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("应列出两份快照：%+v", listed)
+	}
+}
