@@ -279,3 +279,40 @@ func TestTrashRetentionDaysNormalize(t *testing.T) {
 		}
 	}
 }
+
+func TestDomainsDefaultToPluginDepsIncludedRuntimeExcluded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	// 1.3.x 及更早的配置里没有 domains 字段，读进来必须落到"备份插件依赖、
+	// 不备份运行环境"的产品默认，而不是 Go 零值造成的双关。
+	legacy := `{"schemaVersion":1,"theme":"system","updateCheck":true,"onboardingComplete":true,` +
+		`"backupDir":"D:/backups","includeDesktop":true,"encryptionLocal":false,` +
+		`"compression":{"level":"store","dictionaryMb":0,"threads":0,"extraArgs":[]},` +
+		`"schedule":{"kind":"manual","time":"03:00","weekday":1},"retention":{"local":7,"trashDays":7},` +
+		`"preRestoreSnapshot":true,"verifyAfterBackup":true,"closeBehavior":"ask","lastScheduledAt":""}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, filepath.Join(dir, "fallback"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := cfg.Domains.Selection()
+	if selection.Plugins != true || selection.Runtime != false {
+		t.Fatalf("旧配置的域默认不符：%+v", selection)
+	}
+
+	cfg.Domains.SkipPluginDeps = true
+	cfg.Domains.IncludeRuntime = true
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Load(path, filepath.Join(dir, "fallback"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection = reloaded.Domains.Selection()
+	if selection.Plugins != false || selection.Runtime != true {
+		t.Fatalf("域选择未能往返：%+v", selection)
+	}
+}

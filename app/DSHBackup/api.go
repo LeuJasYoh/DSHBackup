@@ -4,6 +4,7 @@ import (
 	"DSHBackup/internal/backup"
 	"DSHBackup/internal/config"
 	"DSHBackup/internal/manifest"
+	"DSHBackup/internal/scope"
 	"DSHBackup/internal/sidecar"
 )
 
@@ -38,13 +39,16 @@ type AppInfo struct {
 }
 
 type SourceInfo struct {
-	Name   string `json:"name"`
-	Label  string `json:"label"`
-	Path   string `json:"path"`
-	Exists bool   `json:"exists"`
-	Files  int64  `json:"files"`
-	Bytes  int64  `json:"bytes"`
-	Error  string `json:"error,omitempty"`
+	Name         string       `json:"name"`
+	Label        string       `json:"label"`
+	Path         string       `json:"path"`
+	Exists       bool         `json:"exists"`
+	Files        int64        `json:"files"`
+	Bytes        int64        `json:"bytes"`
+	SkippedFiles int64        `json:"skippedFiles"`
+	SkippedBytes int64        `json:"skippedBytes"`
+	Domains      []scope.Stat `json:"domains,omitempty"`
+	Error        string       `json:"error,omitempty"`
 }
 
 type DSHStatus struct {

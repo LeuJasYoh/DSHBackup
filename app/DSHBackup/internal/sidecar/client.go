@@ -555,10 +555,12 @@ type Progress struct {
 }
 
 type StageRoot struct {
-	Name       string   `json:"name"`
-	Source     string   `json:"source"`
-	ExcludeTop []string `json:"excludeTop"`
-	ExcludeRel []string `json:"excludeRel"`
+	Name          string   `json:"name"`
+	Source        string   `json:"source"`
+	ExcludeTop    []string `json:"excludeTop"`
+	ExcludeRel    []string `json:"excludeRel"`
+	ExcludePrefix []string `json:"excludePrefix"`
+	ExcludeName   []string `json:"excludeName"`
 }
 
 type ArchiveEntry struct {

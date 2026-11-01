@@ -4,12 +4,15 @@ export type Theme = "system" | "light" | "dark";
 export type CloseBehavior = "ask" | "exit" | "tray";
 export type Page = "dashboard" | "history" | "trash" | "settings";
 export type SettingsSection =
-  | "backup-dir" | "desktop" | "verify" | "prerestore"
+  | "backup-dir" | "scope" | "desktop" | "verify" | "prerestore"
   | "schedule" | "schedule-time" | "schedule-keep" | "trash"
   | "compress" | "compress-advanced"
   | "encryption" | "keys" | "diagnostics"
   | "theme" | "update" | "runtime";
 export type TaskKind = "backup" | "restore" | "verify";
+export type DomainName = "core" | "sessions" | "plugins" | "runtime";
+export interface DomainStat { domain: DomainName; files: number; bytes: number }
+export interface DomainsConfig { skipPluginDeps: boolean; includeRuntime: boolean }
 
 export interface CompressionConfig {
   level: CompressionLevel;
@@ -34,6 +37,7 @@ export interface Config {
   compression: CompressionConfig;
   schedule: ScheduleConfig;
   retention: RetentionConfig;
+  domains: DomainsConfig;
   preRestoreSnapshot: boolean;
   verifyAfterBackup: boolean;
   closeBehavior: CloseBehavior;
@@ -73,6 +77,9 @@ export interface SourceInfo {
   exists: boolean;
   files: number;
   bytes: number;
+  skippedFiles: number;
+  skippedBytes: number;
+  domains?: DomainStat[];
   error?: string;
 }
 export interface DSHStatus {
@@ -92,6 +99,7 @@ export interface Snapshot {
   desktopIncluded: boolean;
   fileCount: number;
   totalBytes: number;
+  domains?: DomainStat[];
   compression?: string;
   captureStatus?: string;
   scope?: string[];

@@ -18,20 +18,12 @@ import (
 	"DSHBackup/internal/manifest"
 	"DSHBackup/internal/pathguard"
 	"DSHBackup/internal/platform"
+	"DSHBackup/internal/scope"
 	"DSHBackup/internal/sevenparams"
 	"DSHBackup/internal/sidecar"
 )
 
-var (
-	DSHExcludeTop     = []string{"logs", "cache", "electron-user-data"}
-	DSHExcludeRel     = []string{".dshw-usage.json.before-recharge-fix.bak"}
-	DesktopExcludeTop = []string{
-		"Cache", "Code Cache", "GPUCache", "GrShaderCache", "DawnWebGPUCache",
-		"DawnGraphiteCache", "ShaderCache", "Dictionaries", "GPUPersistentCache",
-		"Crashpad",
-	}
-	DesktopExcludeRel = []string{"logs"}
-)
+// 排除规则与备份域的定义都在 internal/scope，预览、暂存和恢复共用一张表。
 
 type Progress struct {
 	Phase      string
@@ -228,6 +220,7 @@ func (m *Manager) backup(ctx context.Context, input BackupInput, sources []sidec
 		AppVersion:      m.appVersion,
 		DesktopIncluded: m.sourceExists(filepath.Join(stagingDir, "desktop-state")),
 		Files:           manifest.FileStats{Files: stageResult.Files, Bytes: stageResult.Bytes},
+		Domains:         domainStats(stageResult.Entries),
 		Compressor: manifest.CompressorInfo{
 			Name:    "7-Zip",
 			Version: m.sevenZipVersion,
@@ -615,7 +608,19 @@ func (m *Manager) Restore(ctx context.Context, input RestoreInput) (RestoreResul
 			if !info.IsDir() {
 				return RestoreResult{}, errors.New("恢复目标不是目录：" + target.Path)
 			}
-			sources = append(sources, sidecar.StageRoot{Name: target.Name, Source: target.Path, ExcludeTop: []string{}, ExcludeRel: []string{}})
+			if target.Name == "dsh" {
+				sources = append(sources, dshRoot(target.Path, input.Config.Domains.Selection()))
+				continue
+			}
+			desktop := scope.Desktop()
+			sources = append(sources, sidecar.StageRoot{
+				Name:          target.Name,
+				Source:        target.Path,
+				ExcludeTop:    desktop.Top,
+				ExcludeRel:    desktop.Rel,
+				ExcludePrefix: []string{},
+				ExcludeName:   []string{},
+			})
 		}
 		report("snapshot", 70, "备份即将覆盖的目标数据", 0, 0)
 		preResult, err := m.backup(ctx, BackupInput{
@@ -818,12 +823,7 @@ func (m *Manager) sources(cfg config.Config) ([]sidecar.StageRoot, error) {
 	case !info.IsDir():
 		return nil, errors.New("DSH 数据路径不是目录：" + dshDir)
 	default:
-		roots = append(roots, sidecar.StageRoot{
-			Name:       "dsh",
-			Source:     dshDir,
-			ExcludeTop: DSHExcludeTop,
-			ExcludeRel: DSHExcludeRel,
-		})
+		roots = append(roots, dshRoot(dshDir, cfg.Domains.Selection()))
 	}
 	if cfg.IncludeDesktop {
 		desktopDir := m.paths.DesktopStateDir()
@@ -837,15 +837,31 @@ func (m *Manager) sources(cfg config.Config) ([]sidecar.StageRoot, error) {
 				return nil, errors.New("桌面登录态路径不是目录：" + desktopDir)
 			default:
 				roots = append(roots, sidecar.StageRoot{
-					Name:       "desktop-state",
-					Source:     desktopDir,
-					ExcludeTop: DesktopExcludeTop,
-					ExcludeRel: DesktopExcludeRel,
+					Name:          "desktop-state",
+					Source:        desktopDir,
+					ExcludeTop:    scope.Desktop().Top,
+					ExcludeRel:    scope.Desktop().Rel,
+					ExcludePrefix: []string{},
+					ExcludeName:   []string{},
 				})
 			}
 		}
 	}
 	return roots, nil
+}
+
+// dshRoot 用当前域选择构造 .dsh 根的排除清单。恢复前快照也走这里：跳过的域正是
+// "能在目标机重新生成"的域，归档不会写到它们，因此无需保护。
+func dshRoot(source string, selection scope.Selection) sidecar.StageRoot {
+	excludes := scope.DSH(selection)
+	return sidecar.StageRoot{
+		Name:          "dsh",
+		Source:        source,
+		ExcludeTop:    excludes.Top,
+		ExcludeRel:    excludes.Rel,
+		ExcludePrefix: excludes.Prefix,
+		ExcludeName:   excludes.Name,
+	}
 }
 
 func (m *Manager) sourceExists(path string) bool {
@@ -854,6 +870,14 @@ func (m *Manager) sourceExists(path string) bool {
 	}
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+func domainStats(entries []sidecar.ArchiveEntry) []scope.Stat {
+	converted := make([]scope.Entry, 0, len(entries))
+	for _, entry := range entries {
+		converted = append(converted, scope.Entry{Path: entry.Path, Size: entry.Size, Folder: entry.Folder})
+	}
+	return scope.Stats(converted)
 }
 
 func (m *Manager) verifyStaged(result sidecar.StageResult, includeDesktop bool) ([]string, error) {

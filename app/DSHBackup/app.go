@@ -24,6 +24,7 @@ import (
 	"DSHBackup/internal/manifest"
 	"DSHBackup/internal/pathguard"
 	"DSHBackup/internal/platform"
+	"DSHBackup/internal/scope"
 	"DSHBackup/internal/sidecar"
 	"DSHBackup/internal/tray"
 )
@@ -483,16 +484,17 @@ func (a *App) sourceInfo() []SourceInfo {
 	if len(a.sources) > 0 && time.Since(a.sourceAt) < 30*time.Second {
 		return append([]SourceInfo{}, a.sources...)
 	}
+	selection := a.configSnapshot().Domains.Selection()
 	sources := []SourceInfo{
-		statSource("dsh", "DSH 核心数据", a.paths.DSHDataDir(), backup.DSHExcludeTop, backup.DSHExcludeRel),
-		statSource("desktop-state", "桌面登录态", a.paths.DesktopStateDir(), backup.DesktopExcludeTop, backup.DesktopExcludeRel),
+		statSource("dsh", "DSH 核心数据", a.paths.DSHDataDir(), scope.DSH(selection)),
+		statSource("desktop-state", "桌面登录态", a.paths.DesktopStateDir(), scope.Desktop()),
 	}
 	a.sources = sources
 	a.sourceAt = time.Now()
 	return append([]SourceInfo{}, sources...)
 }
 
-func statSource(name, label, path string, excludeTop, excludeRel []string) SourceInfo {
+func statSource(name, label, path string, excludes scope.Excludes) SourceInfo {
 	info := SourceInfo{Name: name, Label: label, Path: path}
 	if path == "" {
 		info.Error = "路径不可用"
@@ -507,14 +509,7 @@ func statSource(name, label, path string, excludeTop, excludeRel []string) Sourc
 		return info
 	}
 	info.Exists = true
-	top := make(map[string]bool, len(excludeTop))
-	for _, value := range excludeTop {
-		top[strings.ToLower(value)] = true
-	}
-	rel := make(map[string]bool, len(excludeRel))
-	for _, value := range excludeRel {
-		rel[strings.ToLower(filepath.ToSlash(value))] = true
-	}
+	entries := make([]scope.Entry, 0, 256)
 	_ = filepath.WalkDir(path, func(current string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			info.Error = walkErr.Error()
@@ -527,14 +522,14 @@ func statSource(name, label, path string, excludeTop, excludeRel []string) Sourc
 		if err != nil {
 			return nil
 		}
-		parts := strings.Split(filepath.ToSlash(relative), "/")
-		if len(parts) > 0 && top[strings.ToLower(parts[0])] {
-			if entry.IsDir() {
-				return filepath.SkipDir
+		slash := filepath.ToSlash(relative)
+		if excludes.Skipped(slash) {
+			if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+				if fileInfo, infoErr := entry.Info(); infoErr == nil {
+					info.SkippedFiles++
+					info.SkippedBytes += fileInfo.Size()
+				}
 			}
-			return nil
-		}
-		if rel[strings.ToLower(filepath.ToSlash(relative))] {
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -552,8 +547,10 @@ func statSource(name, label, path string, excludeTop, excludeRel []string) Sourc
 		}
 		info.Files++
 		info.Bytes += fileInfo.Size()
+		entries = append(entries, scope.Entry{Path: name + "/" + slash, Size: fileInfo.Size()})
 		return nil
 	})
+	info.Domains = scope.Stats(entries)
 	return info
 }
 

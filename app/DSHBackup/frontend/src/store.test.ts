@@ -44,6 +44,7 @@ function makeBoot(): Bootstrap {
       compression: { level: "store", dictionaryMb: 0, threads: 0, extraArgs: [] },
       schedule: { kind: "manual", time: "03:00", weekday: 1 },
       retention: { local: 7, trashDays: 7 },
+      domains: { skipPluginDeps: false, includeRuntime: false },
       preRestoreSnapshot: true, verifyAfterBackup: true, closeBehavior: "ask", lastScheduledAt: "",
     },
     app: {

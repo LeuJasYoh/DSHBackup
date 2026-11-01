@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"DSHBackup/internal/scope"
 	"DSHBackup/internal/sevenparams"
 )
 
@@ -60,6 +61,17 @@ type Retention struct {
 	TrashDays int `json:"trashDays"`
 }
 
+// Domains 记录可取舍的数据域。两个字段的零值就是产品默认：插件依赖进备份、
+// 运行环境不进备份，所以旧配置不需要迁移。身份与配置、会话与附件不可关闭。
+type Domains struct {
+	SkipPluginDeps bool `json:"skipPluginDeps"`
+	IncludeRuntime bool `json:"includeRuntime"`
+}
+
+func (d Domains) Selection() scope.Selection {
+	return scope.Selection{Plugins: !d.SkipPluginDeps, Runtime: d.IncludeRuntime}
+}
+
 type Config struct {
 	SchemaVersion      int           `json:"schemaVersion"`
 	Theme              Theme         `json:"theme"`
@@ -71,6 +83,7 @@ type Config struct {
 	Compression        Compression   `json:"compression"`
 	Schedule           Schedule      `json:"schedule"`
 	Retention          Retention     `json:"retention"`
+	Domains            Domains       `json:"domains"`
 	PreRestoreSnapshot bool          `json:"preRestoreSnapshot"`
 	VerifyAfterBackup  bool          `json:"verifyAfterBackup"`
 	CloseBehavior      CloseBehavior `json:"closeBehavior"`

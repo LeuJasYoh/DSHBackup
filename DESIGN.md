@@ -75,7 +75,7 @@
 - 云端保留策略默认 7 份，本地保留默认 7 份，均可在设置中修改
 - 7z 高级参数白名单：`-mx=0..9`、`-md=16/32/64/128/256/512/1024m`、`-mmt=1..64`、`-mfb=5..273`、`-ms=on|off`、`-mqs=on|off`；其余参数拒绝
 - 首版提供计划任务：手动、每天、每周；只在应用运行时触发，DSH 运行时会跳过并提示
-- 不做增量/去重；每次为全量快照，未来版本再评估
+- 不做增量/去重；每次为全量快照。可取舍的备份域只减少每份快照包含的数据类别，不构成增量；按域独立保留与内容寻址见 ROADMAP
 - GitHub Device Flow 使用用户自己的 OAuth App Client ID；可选用 fine-grained PAT 兜底
 - 云端 Release 保留策略在每次成功上传后自动执行；界面明确标记“上传成功后自动清理旧快照”
 - 生成密钥前会同时检查本地和（云端模式下）云端是否已有加密快照；发现私钥缺失时阻止自动生成新密钥，避免旧备份永久失效
@@ -86,31 +86,31 @@
 
 ### 4.1 DSH 主数据：`%USERPROFILE%\.dsh`
 
-约 100.5 MB，包含：
+范围按"能否在目标机器上重新生成"划分成四个备份域，定义只有一份，在 `app/DSHBackup/internal/scope`：日常备份、界面预览、恢复前快照都从这里取排除规则，避免"预览大小"和"实际备份内容"各算一套。
 
-> 以下大小为当前设备实测，不代表所有设备；其他用户的 DSH 数据量可能明显更小或更大。
+> 以下大小为当前设备实测（2026-11-01，装了 `@dsh-ops/bash-win32-x64` 插件之后），不代表所有设备；其他用户的数据量可能明显更小。
 
-| 路径 | 内容 | 是否必须 |
-|---|---|---|
-| `.credentials.yaml` | API Key、登录/授权记录 | 是 |
-| `profiles/` | profile、插件配置和已安装插件 | 是 |
-| `sessions/` | 会话记录（约 68 MB） | 是 |
-| `storages/` | 工作区登记、项目关联、会话缓存 | 是 |
-| `attachments/` | 会话附件（约 22 MB） | 是 |
-| `recovery/` | 异常退出恢复数据 | 是 |
-| `llm-deepseek/` | 模型/文件元数据 | 是 |
-| `dsh-claude-style/` | 插件配置和用量 | 是 |
-| `.dshw-usage.json` | 余额、今日用量、历史、事件、accounting | 是 |
-| `.dshw-size.json`、`.dshw-turn.json` | 挂件设置/最近用量 | 建议 |
-| `desktop-locale.json`、`.anonymous-user-id` | 客户端设置/匿名标识 | 建议 |
-| `whale-audio/`、`whale-roles/`、`whale-bubble-imgs/` | 当前为空或可重建 | 否 |
+| 域 | 路径 | 内容 | 默认 |
+|---|---|---|---|
+| `core` 身份与配置 | `.credentials.yaml`、`profiles/*/{package.json,pnpm-lock.yaml,pnpm-workspace.yaml,cordis.patch.yml,.dsh-market/state.json}`、`storages/workspace.json`、`.dshw-usage.json`、`.dshw-size.json`、`.dshw-turn.json`、`whale-roles/`、`whale-audio/`、`whale-bubble-imgs/`、`dsh-claude-style/`、`desktop-locale.json`、`desktop-window-state.json`、`.anonymous-user-id` | API Key 与登录记录、插件的**声明与用户状态**、工作区登记、用量账本与充值记录 | 恒定备份（实测 1.0 MiB） |
+| `sessions` 会话与附件 | `sessions/**`、`attachments/v1/**` | 会话日志与其引用的图片正文。两者必须同进同出：会话日志只保存引用，持久字节在 attachments | 恒定备份（实测 141.2 MiB） |
+| `plugins` 插件依赖 | `profiles/*/node_modules/**`、`profiles/node_modules/**` | 插件包本体。可由随包 pnpm 依 `package.json` + `pnpm-lock.yaml` 重装，但需要联网或本机 pnpm store；实测内含 65.8 MiB 硬链接造成的重复计入 | **默认进备份**（实测 425.0 MiB） |
+| `runtime` 运行环境副本 | `dsh-runtimes/**` | 应用把自身 `resources/runtime/primary-runtime` 复制进 home 的一份 python/node/pnpm。首次调用 `load_workspace_dependencies`（Office 类技能）时在本地重新复制，**不需要网络** | **默认不备份**（实测 257.9 MiB） |
 
-明确排除：
+恒定排除（派生数据，可自愈或可重新取得）：
 
-- `logs/`：旧日志和诊断记录
-- `cache/`：可重建缓存
-- `.dshw-usage.json.before-recharge-fix.bak`：历史备份文件
-- 已删除的旧 DSH NEXT `electron-user-data`
+- `logs/`：旧日志与诊断记录
+- `cache/`：请求态归一化副本 `cache/attachments/request-images`，以及带 `fetchedAt` 的远端文档（如 `cache/dsh-claude-style/peakrate.json`）
+- `storages/session_projcache/`：投影缓存，上游文档写明"失败只记警告，下一次写入自愈"
+- `__pycache__/`（任意深度）：Python 字节码缓存
+- `.dshw-usage.json.before-recharge-fix.bak`：历史留档
+- `electron-user-data/`：只有 DSH NEXT 会写（`dsh-desktop-next/src/main.ts:75-80`）；官方版登录态在 `%APPDATA%\@deepseek-ai\dsh-desktop`
+
+补充说明（2026-11-01）：
+
+- 归档条目的时间戳现在取自源文件。此前暂存丢弃了 mtime，导致恢复后所有文件时间都等于备份那一刻。
+- `profiles/*/cordis.yml` 由应用生成、新版启动会重写，但体积很小，仍留在 `core` 域，不作为排除项。
+- 一个快照目前仍是**单个归档**：分域只决定"哪些数据进这个归档"以及清单里的 `domains` 统计。按域独立保留份数、一快照 N 归档属于下一里程碑。
 
 ### 4.2 桌面端登录/界面状态：`%APPDATA%\@deepseek-ai\dsh-desktop`
 

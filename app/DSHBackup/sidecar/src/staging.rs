@@ -20,6 +20,13 @@ pub struct StageRoot {
     pub exclude_top: Vec<String>,
     #[serde(default)]
     pub exclude_rel: Vec<String>,
+    /// Subtrees excluded at any depth: a relative path matches when it equals
+    /// the entry or is inside it.
+    #[serde(default)]
+    pub exclude_prefix: Vec<String>,
+    /// Directory or file names excluded wherever they appear in the tree.
+    #[serde(default)]
+    pub exclude_name: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +40,9 @@ struct PlannedFile {
     source: PathBuf,
     relative: PathBuf,
     size: u64,
+    accessed: filetime::FileTime,
+    modified: filetime::FileTime,
+    created: Option<filetime::FileTime>,
 }
 
 struct PlannedDir {
@@ -41,6 +51,42 @@ struct PlannedDir {
 
 fn slash_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn inside_prefix(normalized: &str, prefixes: &HashSet<String>) -> bool {
+    prefixes.iter().any(|prefix| {
+        normalized == *prefix
+            || normalized
+                .strip_prefix(prefix.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+fn has_named_segment(normalized: &str, names: &HashSet<String>) -> bool {
+    normalized.split('/').any(|part| names.contains(part))
+}
+
+/// Restore the source timestamps on the staged copy. 7-Zip records the times it
+/// sees, so skipping this step makes every restored file look as if it was
+/// written at backup time.
+fn apply_times(path: &Path, plan: &PlannedFile) {
+    let mut applied = false;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTimesExt;
+        if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
+            let mut times = std::fs::FileTimes::new()
+                .set_accessed(std::time::SystemTime::from(plan.accessed))
+                .set_modified(std::time::SystemTime::from(plan.modified));
+            if let Some(created) = plan.created {
+                times = times.set_created(std::time::SystemTime::from(created));
+            }
+            applied = file.set_times(times).is_ok();
+        }
+    }
+    if !applied {
+        let _ = filetime::set_file_times(path, plan.accessed, plan.modified);
+    }
 }
 
 pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Result<Value> {
@@ -96,6 +142,18 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
             .iter()
             .map(|value| value.replace('\\', "/").to_ascii_lowercase())
             .collect();
+        let exclude_prefix: HashSet<String> = root
+            .exclude_prefix
+            .iter()
+            .map(|value| value.replace('\\', "/").trim_matches('/').to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect();
+        let exclude_name: HashSet<String> = root
+            .exclude_name
+            .iter()
+            .map(|value| value.replace('\\', "/").to_ascii_lowercase())
+            .filter(|value| !value.contains('/'))
+            .collect();
 
         let mut filtered_reparse = 0usize;
         let walker = WalkDir::new(&root.source)
@@ -123,6 +181,12 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
                     .replace('\\', "/")
                     .to_ascii_lowercase();
                 if exclude_rel.contains(&normalized) {
+                    return false;
+                }
+                if inside_prefix(&normalized, &exclude_prefix) {
+                    return false;
+                }
+                if has_named_segment(&normalized, &exclude_name) {
                     return false;
                 }
                 match entry.metadata() {
@@ -194,6 +258,9 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
                 source: entry.path().to_path_buf(),
                 relative: named_relative,
                 size: meta.len(),
+                accessed: filetime::FileTime::from_last_access_time(&meta),
+                modified: filetime::FileTime::from_last_modification_time(&meta),
+                created: meta.created().ok().map(filetime::FileTime::from_system_time),
             });
         }
         if filtered_reparse > 0 {
@@ -235,6 +302,7 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
         let destination = request.staging_dir.join(&file.relative);
         match stable_copy(&file.source, &destination, token) {
             Ok(size) if size == file.size => {
+                apply_times(&destination, file);
                 staged_bytes += size;
                 staged_files += 1;
             }
@@ -475,4 +543,115 @@ pub fn install_staging(
         "totalFiles": total_files,
         "warnings": warnings,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::SharedWriter;
+    use std::io::BufWriter;
+    use std::sync::{Arc, Mutex};
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-stage-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn emitter() -> Emitter {
+        let writer: SharedWriter = Arc::new(Mutex::new(BufWriter::new(std::io::stdout())));
+        Emitter::new(writer, None)
+    }
+
+    fn run_stage(root: StageRoot, staging: &Path) -> Value {
+        let request = StageRequest {
+            staging_dir: staging.to_path_buf(),
+            roots: vec![root],
+        };
+        super::stage(request, &AtomicBool::new(false), &emitter()).unwrap()
+    }
+
+    fn dsh_root(source: &Path) -> StageRoot {
+        StageRoot {
+            name: "dsh".to_string(),
+            source: source.to_path_buf(),
+            exclude_top: vec![],
+            exclude_rel: vec![],
+            exclude_prefix: vec![],
+            exclude_name: vec![],
+        }
+    }
+
+    #[test]
+    fn staged_copy_keeps_the_source_timestamps() {
+        let dir = scratch("times");
+        let source = dir.join("source");
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&source).unwrap();
+        let file = source.join("session.jsonl");
+        std::fs::write(&file, b"content").unwrap();
+        let expected = filetime::FileTime::from_unix_time(1_700_000_000, 0);
+        filetime::set_file_mtime(&file, expected).unwrap();
+
+        run_stage(dsh_root(&source), &staging);
+
+        let meta = std::fs::metadata(staging.join("dsh/session.jsonl")).unwrap();
+        assert_eq!(
+            filetime::FileTime::from_last_modification_time(&meta),
+            expected,
+            "暂存丢弃了源文件时间，归档会把所有文件记成备份那一刻"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prefix_and_name_exclusions_drop_whole_subtrees() {
+        let dir = scratch("exclusions");
+        let source = dir.join("source");
+        let staging = dir.join("staging");
+        for relative in [
+            "storages/workspace.json",
+            "storages/session_projcache/sessions/a.json",
+            "profiles/desktop/node_modules/pkg/index.js",
+            "profiles/desktop/package.json",
+            "sessions/s/session.v4.jsonl.zstd",
+        ] {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"x").unwrap();
+        }
+
+        let mut root = dsh_root(&source);
+        root.exclude_prefix = vec!["storages/session_projcache".to_string()];
+        root.exclude_name = vec!["node_modules".to_string()];
+        let result = run_stage(root, &staging);
+
+        let mut paths: Vec<String> = result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["folder"].as_bool() == Some(false))
+            .map(|entry| entry["path"].as_str().unwrap_or_default().to_string())
+            .collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                "dsh/profiles/desktop/package.json",
+                "dsh/sessions/s/session.v4.jsonl.zstd",
+                "dsh/storages/workspace.json",
+            ],
+            "前缀与目录名排除没有只去掉派生数据"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

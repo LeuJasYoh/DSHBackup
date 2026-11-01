@@ -771,3 +771,54 @@ pwsh ./build.ps1               # 默认版本 1.2.3，需按 R8 更新
 5. UI 改动（R1-h、R2、R4）先给静态稿或浏览器预览截图让用户确认，再写实现（记忆里已确立的工作方式）。
 6. 不做第 2 节红线未授权的事；不 push、不 tag、不发 Release。
 7. 完成一个阶段后更新本文件的「状态」列与 `REPAIR_HANDOFF.md` 第 22 节的实现状态，保持两份文档不互相矛盾。
+
+---
+
+## 16. R9 备份域划分与时间戳保真（2026-11-01）
+
+### 16.1 起因
+
+用户同时装了官方版与 DSH NEXT 后，单份归档从 120 MB 涨到实测 867 MB（`dsh-backup-20261101-100313.7z`，
+16,741 条目）。逐条拆解归档清单后确认：涨的量 **不是 NEXT 复制出来的**，而是两类可重新生成的数据
+被恒定纳入了备份范围——应用自带的运行环境被复制进 home（258 MiB），以及一个插件把整套
+Git-for-Windows 装进 profile（392 MiB）。因此本轮的修法是"按能否重新生成划分范围"，不是"修增量备份"。
+
+### 16.2 已落地
+
+| 项 | 内容 | 位置 |
+| --- | --- | --- |
+| 单一事实源 | 新增 `internal/scope`：四个备份域、排除清单、域归类、域统计。日常备份、界面预览、恢复前快照都走它 | `internal/scope/scope.go` |
+| 运行环境默认不备份 | `dsh-runtimes/` 未启用时根本不进暂存（省 258 MiB 暂存 + 归档），启用时按域统计进清单 | `scope.DSH()` + `manager.dshRoot()` |
+| 插件依赖默认仍备份 | 可由用户关闭；关闭后恢复需要联网或本机 pnpm store 重建，文案已写明 | `config.Domains.SkipPluginDeps` |
+| 派生缓存收窄 | 新增任意深度子树排除 `storages/session_projcache`、目录名排除 `__pycache__` | `scope.DSH()` |
+| 时间戳保真（缺陷修复） | 暂存以前丢弃源文件 mtime，归档把所有文件记成备份那一刻；现在写回 accessed/modified/created | `sidecar/src/staging.rs:apply_times()` |
+| 清单记录域构成 | `manifest.domains[]` 记录每域文件与字节；`SchemaVersion` 仍为 1，字段可缺省，旧清单照读 | `internal/manifest/manifest.go` |
+| 预览显示跳过量 | `SourceInfo` 新增 `skippedFiles/skippedBytes/domains` | `app.go:statSource()`、`api.go` |
+| 设置页 | 新增「备份内容与体积」一节：四行域、体积与文件数、两个可取舍开关；导轨同步加条目 | `views/SettingsView.vue` |
+| 仪表盘 | 「保护范围」卡片显示分域体积与"跳过 X" | `views/DashboardView.vue` |
+| 配置兼容 | 旧配置没有 `domains` 字段时，`Load` 后默认即"插件进、运行环境不进"，无需迁移 | `config_test.go` 用例 |
+
+新增测试：Rust `staging` 2 例（时间戳、前缀与目录名排除）；Go `scope` 5 例；`config` 1 例；
+集成 2 例（`TestDomainSelectionSkipsReinstallableData`、`TestRestoreKeepsOriginalTimestamps`，
+后者跑完整"备份→抹掉时间→恢复到新目录→断言 mtime 回到源文件值"）。
+
+### 16.3 决策（本轮用户确认）
+
+| 编号 | 问题 | 决定 |
+| --- | --- | --- |
+| D-6 | 分域粒度 | 插件依赖**默认开**、运行环境**默认关**（按不可逆风险排序，而非按体积） |
+| D-7 | attachments 归属 | 与 `sessions` 同域，不可拆（会话日志只存引用） |
+| D-8 | 声明文件与 node_modules | 声明留在 `core`，但恢复时若两者不同代需警告（上游只校验 `nodeLinker`/pnpm 主版本，不比对 lockfile） |
+| D-9 | 增量 | 本轮不做。域跳过 ≠ 增量；链式增量与现有"排序取前 N"的淘汰、回收站找回互相冲突，需先给保留策略加"被引用不可淘汰" |
+
+### 16.4 未做（下一里程碑）
+
+1. **一快照 N 归档 + 分域保留份数**：现在仍是一归档，`retention.local` 是全局数。分域后需要
+   `manifest` 的多归档命名（`ArchiveName`/`Scan`/`Validate` 三处）、回收站条目按域
+   （`TrashMeta.ArchiveName` 单数要变成列表）、以及恢复时按域挑选并校验"缺域即中止"。
+2. `sessions` 域内容寻址：按文件做 CAS 才能把稳态压到 ~0.6 GiB；同时可消掉 `@dsh-ops` 里
+   65.8 MiB 的硬链接重复计入（`fsutil hardlink list` 实测同一物理文件在 `ucrt64/bin` 与
+   `libexec/git-core` 各有一条路径）。
+3. 归档级 `domains` 与恢复确认框联动：勾选子集恢复时提示"运行环境将在首次使用 Office 技能时本地重建"。
+
+验收命令与基线相同（第 12 节）。本节的 UI 改动**未在应用内点击验证**，只过了 `vue-tsc` 与 `vitest`。

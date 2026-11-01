@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"DSHBackup/internal/scope"
 )
 
 const (
@@ -53,6 +55,7 @@ type Manifest struct {
 	AppVersion      string          `json:"appVersion"`
 	Hostname        string          `json:"hostname,omitempty"`
 	Scope           []string        `json:"scope"`
+	Domains         []scope.Stat    `json:"domains,omitempty"`
 	DesktopIncluded bool            `json:"desktopIncluded"`
 	Files           FileStats       `json:"files"`
 	Archive         ArchiveInfo     `json:"archive"`
@@ -62,23 +65,24 @@ type Manifest struct {
 }
 
 type Snapshot struct {
-	ID              string   `json:"id"`
-	CreatedAt       string   `json:"createdAt"`
-	Kind            string   `json:"kind"`
-	Size            int64    `json:"size"`
-	SHA256          string   `json:"sha256"`
-	Encrypted       bool     `json:"encrypted"`
-	KeyID           string   `json:"keyId,omitempty"`
-	DesktopIncluded bool     `json:"desktopIncluded"`
-	FileCount       int64    `json:"fileCount"`
-	TotalBytes      int64    `json:"totalBytes"`
-	Compression     string   `json:"compression,omitempty"`
-	CaptureStatus   string   `json:"captureStatus,omitempty"`
-	Scope           []string `json:"scope,omitempty"`
-	Status          string   `json:"status"`
-	LocalPath       string   `json:"localPath,omitempty"`
-	ManifestPath    string   `json:"manifestPath,omitempty"`
-	ManifestAliases []string `json:"manifestAliases,omitempty"`
+	ID              string       `json:"id"`
+	CreatedAt       string       `json:"createdAt"`
+	Kind            string       `json:"kind"`
+	Size            int64        `json:"size"`
+	SHA256          string       `json:"sha256"`
+	Encrypted       bool         `json:"encrypted"`
+	KeyID           string       `json:"keyId,omitempty"`
+	DesktopIncluded bool         `json:"desktopIncluded"`
+	FileCount       int64        `json:"fileCount"`
+	TotalBytes      int64        `json:"totalBytes"`
+	Domains         []scope.Stat `json:"domains,omitempty"`
+	Compression     string       `json:"compression,omitempty"`
+	CaptureStatus   string       `json:"captureStatus,omitempty"`
+	Scope           []string     `json:"scope,omitempty"`
+	Status          string       `json:"status"`
+	LocalPath       string       `json:"localPath,omitempty"`
+	ManifestPath    string       `json:"manifestPath,omitempty"`
+	ManifestAliases []string     `json:"manifestAliases,omitempty"`
 }
 
 var idPattern = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}$`)
@@ -172,6 +176,18 @@ func Validate(value Manifest) error {
 	}
 	if _, err := time.Parse(time.RFC3339, value.CreatedAt); err != nil {
 		return errors.New("备份时间格式无效")
+	}
+	knownDomains := make(map[scope.Domain]bool)
+	for _, name := range scope.Names() {
+		knownDomains[name] = true
+	}
+	for _, stat := range value.Domains {
+		if !knownDomains[stat.Domain] {
+			return fmt.Errorf("未知备份域：%s", stat.Domain)
+		}
+		if stat.Files < 0 || stat.Bytes < 0 {
+			return fmt.Errorf("备份域 %s 的统计值无效", stat.Domain)
+		}
 	}
 	switch value.Kind {
 	case KindManual, KindScheduled, KindPreRestore:
@@ -297,6 +313,7 @@ func FromManifest(value Manifest, archivePath, manifestPath string) Snapshot {
 		DesktopIncluded: value.DesktopIncluded,
 		FileCount:       value.Files.Files,
 		TotalBytes:      value.Files.Bytes,
+		Domains:         append([]scope.Stat{}, value.Domains...),
 		Compression:     compressionLevel(value.Compressor.Args),
 		CaptureStatus:   value.CaptureStatus,
 		Scope:           append([]string{}, value.Scope...),

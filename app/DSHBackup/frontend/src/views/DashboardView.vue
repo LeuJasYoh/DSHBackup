@@ -10,6 +10,7 @@ import {
   startVerify, store,
 } from "../store";
 import { formatBytes, formatRelative, restoreBlockReason, scheduleLabel, statusLabel } from "../lib/format";
+import type { DomainName, SourceInfo } from "../lib/types";
 
 const showAllWarnings = ref(false);
 const boot = computed(() => store.boot!);
@@ -20,6 +21,12 @@ const result = computed(() => store.taskResult);
 const readyCount = computed(() => snapshots.value.filter((item) => item.status === "ready").length);
 const issueCount = computed(() => snapshots.value.length - readyCount.value);
 const sourceDsh = computed(() => boot.value.dsh.sources.find((source) => source.name === "dsh"));
+function domainSummary(source: SourceInfo | undefined): string {
+  const labels: Record<DomainName, string> = { core: "身份配置", sessions: "会话附件", plugins: "插件依赖", runtime: "运行环境" };
+  const parts = (source?.domains ?? []).map((stat) => `${labels[stat.domain]} ${formatBytes(stat.bytes)}`);
+  if (source?.skippedBytes) parts.push(`跳过 ${formatBytes(source.skippedBytes)}`);
+  return parts.join(" · ");
+}
 const sourceDesktop = computed(() => boot.value.dsh.sources.find((source) => source.name !== "dsh"));
 const latestBlocked = computed(() => latest.value ? restoreBlockReason(latest.value, boot.value.key) : "");
 const nextNote = computed(() => {
@@ -156,8 +163,11 @@ const weekly = computed(() => {
                 <span class="mono">{{ sourceDsh?.path || "未检测到 DSH 数据目录" }}</span>
                 <CopyButton v-if="sourceDsh?.exists" :value="sourceDsh.path" />
               </div>
+              <div v-if="sourceDsh?.domains?.length" class="row-sub" :title="domainSummary(sourceDsh)">
+                {{ domainSummary(sourceDsh) }}
+              </div>
             </div>
-            <span class="row-meta">{{ sourceDsh?.exists ? formatBytes(sourceDsh.bytes) : "不存在" }}</span>
+            <span class="row-meta" :title="sourceDsh?.skippedBytes ? `已跳过 ${formatBytes(sourceDsh.skippedBytes)}（日志、缓存与可重新生成的数据）` : undefined">{{ sourceDsh?.exists ? formatBytes(sourceDsh.bytes) : "不存在" }}</span>
           </div>
           <div class="rowline">
             <div class="row-main">

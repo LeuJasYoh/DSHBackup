@@ -5,12 +5,13 @@ import { api } from "../lib/bridge";
 import { cloneConfig, compressionHint, compressionLevels, compressionShort, configFingerprint, errorMessage, extraArgsError, formatBytes, formatDate, parseExtraArgs, scheduleLabel, validateConfig, weekdayLabel } from "../lib/format";
 import { applyTheme } from "../lib/theme";
 import { checkForUpdates, isBusy, openBackupFolder, openDataFolder, openKeysFolder, openLogsFolder, openReleasePage, openRepository, openTrashFolder, pickDirectory, saveConfig, store, trashBytes, trashCount } from "../store";
-import type { Config, SettingsSection, Theme } from "../lib/types";
+import type { Config, DomainName, SettingsSection, Theme } from "../lib/types";
 
 interface RailItem { id: SettingsSection; label: string; depth?: 2; when?: () => boolean }
 /* 目录是一棵树，不是一组分开的列表：depth 2 挂在上一条 depth 1 下，导轨线在行间拐圆角弯。 */
 const railItems: RailItem[] = [
   { id: "backup-dir", label: "备份目录" },
+  { id: "scope", label: "备份内容与体积" },
   { id: "desktop", label: "包含桌面登录态" },
   { id: "verify", label: "备份后自动校验" },
   { id: "prerestore", label: "恢复前创建快照" },
@@ -61,6 +62,31 @@ const dirty = computed(() => !!draft.value && configFingerprint(draft.value, ext
 const argsError = computed(() => extraArgsError(extraArgsText.value));
 const validation = computed(() => draft.value ? validateConfig(draft.value, extraArgsText.value) : "设置尚未加载");
 const directoryChanged = computed(() => draft.value?.backupDir !== boot.value.config.backupDir);
+
+/* 备份域：身份与会话不可关闭，插件依赖与运行环境可各自取舍。 */
+const dshSource = computed(() => boot.value.dsh.sources.find((source) => source.name === "dsh"));
+function domainBytes(domain: DomainName): number {
+  return dshSource.value?.domains?.find((stat) => stat.domain === domain)?.bytes ?? 0;
+}
+function domainFiles(domain: DomainName): number {
+  return dshSource.value?.domains?.find((stat) => stat.domain === domain)?.files ?? 0;
+}
+const scopeRows = computed(() => [
+  { key: "core", label: "身份与配置", desc: "凭据、桌面登录态、插件声明与清单、用量账本、工作区索引", files: domainFiles("core"), bytes: domainBytes("core"), locked: true },
+  { key: "sessions", label: "会话与附件", desc: "会话日志与其引用的图片正文，两者必须同进同出", files: domainFiles("sessions"), bytes: domainBytes("sessions"), locked: true },
+  { key: "plugins", label: "插件依赖", desc: "node_modules 本体；关闭后恢复需联网执行 pnpm install 重建", files: domainFiles("plugins"), bytes: domainBytes("plugins"), locked: false },
+  { key: "runtime", label: "运行环境副本", desc: "应用把自己目录里的 python/node/pnpm 复制到 .dsh 的一份，首次使用 Office 技能即在本地重新复制，无需网络", files: domainFiles("runtime"), bytes: domainBytes("runtime"), locked: false },
+] as Array<{ key: DomainName; label: string; desc: string; files: number; bytes: number; locked: boolean }>);
+function domainEnabled(domain: DomainName): boolean {
+  if (!draft.value) return false;
+  if (domain === "core" || domain === "sessions") return true;
+  return domain === "plugins" ? !draft.value.domains.skipPluginDeps : draft.value.domains.includeRuntime;
+}
+function setDomainEnabled(domain: DomainName, value: boolean) {
+  if (!draft.value) return;
+  if (domain === "plugins") draft.value.domains.skipPluginDeps = !value;
+  else if (domain === "runtime") draft.value.domains.includeRuntime = value;
+}
 
 function syncDraft(config = store.boot?.config) {
   if (!config) return;
@@ -344,6 +370,27 @@ function setRetention(delta: number) {
                 <input id="backupDir" v-model="draft.backupDir" class="text-input mono" aria-label="备份目录" />
                 <button class="btn btn-secondary btn-small" type="button" @click="browseBackupDir">{{ browsing ? "选择中…" : "浏览" }}</button>
                 <button class="btn btn-ghost btn-small" type="button" :disabled="directoryChanged" title="打开已保存的备份目录" @click="openBackupFolder()">打开</button>
+              </div>
+            </div>
+          </section>
+
+          <section id="sec-scope" class="set-sec">
+            <h2>备份内容与体积</h2>
+            <div class="setting-desc" style="margin-bottom:10px">
+              按能否重新生成划分。当前 {{ formatBytes(dshSource?.bytes ?? 0) }} 进入归档，
+              另有 {{ formatBytes(dshSource?.skippedBytes ?? 0) }} 作为日志、缓存与派生数据被跳过。
+            </div>
+            <div v-for="row in scopeRows" :key="row.key" class="setting-row">
+              <div class="setting-copy">
+                <div class="setting-title">{{ row.label }}<span class="row-meta" style="margin-left:8px">{{ formatBytes(row.bytes) }} · {{ row.files }} 个文件</span></div>
+                <div class="setting-desc">{{ row.desc }}</div>
+              </div>
+              <div class="setting-control">
+                <span v-if="row.locked" class="row-meta">恒定备份</span>
+                <label v-else class="switch" :aria-label="row.label">
+                  <input type="checkbox" :checked="domainEnabled(row.key)" @change="setDomainEnabled(row.key, ($event.target as HTMLInputElement).checked)" />
+                  <span class="switch-track"></span>
+                </label>
               </div>
             </div>
           </section>
