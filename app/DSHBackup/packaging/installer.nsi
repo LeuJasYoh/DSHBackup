@@ -58,6 +58,11 @@ Var InvalidReason
 !define MUI_UNICON "${ICON}"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "${WIZARD}"
 !define MUI_UNWELCOMEFINISHPAGE_BITMAP "${WIZARD}"
+; 侧图控件是 109x193 DLU，横纵基准单位随字体/DPI 各自变化（120 DPI 实测 218x362 px，
+; 而 96 DPI 是 164x314 px），默认的 FitControl 会按控件尺寸非等比拉伸，把鲸鱼横向拉宽 15%。
+; AspectFitHeight 按高度等比适配；图本身出到 2x（328x628），100%~200% 缩放都是下采样而不是上采样。
+!define MUI_WELCOMEFINISHPAGE_BITMAP_STRETCH AspectFitHeight
+!define MUI_UNWELCOMEFINISHPAGE_BITMAP_STRETCH AspectFitHeight
 
 !define MUI_WELCOMEPAGE_TITLE "安装 DSH Backup ${VERSION}"
 !define MUI_WELCOMEPAGE_TEXT "DSH Backup 只在本机备份 DSH 的核心数据，配置、密钥和备份都不会上传。$\r$\n$\r$\n安装版会把程序、配置、密钥和本地备份都放在安装目录。请选择一个当前用户可写的文件夹。$\r$\n$\r$\n安装程序还会安装 Rust 核心与官方 7-Zip CLI，并可选择创建桌面快捷方式。"

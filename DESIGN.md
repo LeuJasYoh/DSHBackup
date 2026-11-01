@@ -1446,6 +1446,13 @@ o["--offset-distance"] = t ? e.itemLineLengths[i][0]   // 向上：弧长走到�
 - 开始菜单快捷方式始终创建，卸载快捷方式位于同一文件夹。
 - 卸载信息写入 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\DSHBackup`，显示版本、发布者、安装位置、卸载与静默卸载命令。
 - 安装包使用 `build/windows/icon.ico` 作为安装/卸载图标，`packaging/installer-wizard.bmp` 作为欢迎/完成页侧图。
+- 侧图规格：328x628（NSIS 惯例 164x314 的 2 倍）、24bpp、白底与页面底色同为 `255,255,255`。
+  拉伸模式必须显式设成 `MUI_WELCOMEFINISHPAGE_BITMAP_STRETCH AspectFitHeight`：侧图控件是 109x193 DLU，
+  横纵基准单位各自随字体/DPI 变化（本机实测 96 DPI 下 164x314 px，120 DPI 下 218x362 px），
+  默认的 `FitControl` 按控件尺寸非等比拉伸，120 DPI 时把鲸鱼横向多拉 **15.2%**（墨迹宽高比 1.3529 → 1.5584）；
+  等比适配后实测 **1.3469**，误差 0.3%。出到 2x 是为了让 100%~200% 缩放都落在下采样上，而不是把 1x 位图放大糊掉。
+- 侧图里的文字用灰度 AA（GDI+ `TextRenderingHint.AntiAlias`）绘制，不用 ClearType：旧图把子像素黄/青边
+  （实测 `#F7D999`、`#BCF6F4`）烤进了位图，非等比拉伸后就是肉眼可见的彩色毛刺。
 
 ### 31.3 运行中与数据保留
 
