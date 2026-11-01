@@ -15,10 +15,10 @@ ${StrStr}
 ${UnStrStr}
 
 !ifndef VERSION
-  !define VERSION "1.4.0"
+  !define VERSION "1.4.1"
 !endif
 !ifndef VERSION4
-  !define VERSION4 "1.4.0.0"
+  !define VERSION4 "1.4.1.0"
 !endif
 !ifndef SOURCE
   !define SOURCE "..\..\..\dist\DSHBackup"

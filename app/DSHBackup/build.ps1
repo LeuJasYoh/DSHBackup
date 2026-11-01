@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$Version = "1.4.0",
+    [string]$Version = "1.4.1",
     [switch]$SkipFrontendInstall,
     [switch]$SkipZip,
     [switch]$SkipInstaller,

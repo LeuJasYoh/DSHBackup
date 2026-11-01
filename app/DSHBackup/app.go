@@ -30,7 +30,7 @@ import (
 )
 
 var (
-	Version   = "1.4.0"
+	Version   = "1.4.1"
 	BuildTime = "dev"
 )
 
