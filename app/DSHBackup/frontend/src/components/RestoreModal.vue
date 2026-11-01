@@ -3,8 +3,8 @@ import { computed, ref, watch } from "vue";
 import OptionSelect from "./OptionSelect.vue";
 import { useModalFocus } from "../lib/modalFocus";
 import { askConfirm, isBusy, pickDirectory, snapshots, startRestore, store } from "../store";
-import { errorMessage, formatBytes, formatDate, isAbsoluteDirectory, restoreBlockReason, scopeLabel, statusLabel } from "../lib/format";
-import type { RestoreRequest } from "../lib/types";
+import { errorMessage, formatBytes, formatDate, isAbsoluteDirectory, restoreBlockReason, scopeLabel, snapshotDomains, statusLabel } from "../lib/format";
+import type { RestoreRequest, SnapshotPart } from "../lib/types";
 
 const selectedId = ref(store.restorePreselect || snapshots.value[0]?.id || "");
 const targetMode = ref<"default" | "custom">("default");
@@ -24,12 +24,20 @@ const snapshotOptions = computed(() => snapshots.value.map((snapshot) => ({
   label: `${formatDate(snapshot.createdAt)} · ${formatBytes(snapshot.size)} · ${statusLabel(snapshot.status)}`,
 })));
 const selected = computed(() => snapshots.value.find((snapshot) => snapshot.id === selectedId.value));
+// 一快照多归档：勾选要恢复的域；只有一份归档的旧快照不显示勾选框。
+const restoreParts = computed<SnapshotPart[]>(() => snapshotDomains(selected.value));
+const multiDomain = computed(() => restoreParts.value.length > 1);
+const selectedDomains = ref<string[]>([]);
 const defaultTarget = computed(() => store.boot?.dsh.sources.find((source) => source.name === "dsh")?.path ?? "");
 const target = computed(() => targetMode.value === "custom" ? customTarget.value.trim() : defaultTarget.value);
 const desktopAvailable = computed(() => targetMode.value === "default" && !!selected.value?.desktopIncluded);
 const desktopTarget = computed(() => store.boot?.dsh.sources.filter((source) => source.name !== "dsh").map((source) => source.path).join("；") || "系统桌面登录态目录");
 const blocked = computed(() => restoreBlockReason(selected.value, store.boot?.key));
-const archiveName = computed(() => selected.value?.localPath?.split(/[\\/]/).pop() || (selected.value ? `dsh-backup-${selected.value.id}.7z` : "选择一份归档"));
+const archiveName = computed(() => {
+  if (!selected.value) return "选择一份归档";
+  if (multiDomain.value) return `dsh-backup-${selected.value.id}-*.7z（${restoreParts.value.length} 份）`;
+  return selected.value.localPath?.split(/[\\/]/).pop() || `dsh-backup-${selected.value.id}.7z`;
+});
 const targetError = computed(() => {
   if (!isAbsoluteDirectory(target.value)) return "请选择有效的 Windows 绝对目录。";
   if (targetMode.value === "custom" && selected.value?.scope?.length && !selected.value.scope.includes("dsh")) return "该归档不包含 DSH 核心数据，不能恢复到其他目录。";
@@ -39,7 +47,11 @@ const targetError = computed(() => {
 });
 watch(() => selected.value?.id, () => {
   includeDesktop.value = targetMode.value === "default" && !!store.boot?.config.includeDesktop && !!selected.value?.desktopIncluded;
+  selectedDomains.value = restoreParts.value.filter((part) => part.status === "ready").map((part) => part.domain);
 }, { immediate: true });
+const selectedLabels = computed(() => restoreParts.value
+  .filter((part) => !multiDomain.value || selectedDomains.value.includes(part.domain))
+  .map((part) => part.label).join(" + ") || "未选择");
 watch(targetMode, () => { includeDesktop.value = false; });
 async function browseTarget() {
   if (locked.value) return;
@@ -51,10 +63,12 @@ async function browseTarget() {
 async function submit() {
   if (locked.value) return;
   failure.value = blocked.value || targetError.value;
+  if (!failure.value && multiDomain.value && selectedDomains.value.length === 0) failure.value = "请至少选择一个要恢复的内容。";
   if (failure.value || !selected.value) return;
   submitting.value = true;
   const request: RestoreRequest = {
     snapshotId: selected.value.id,
+    domains: multiDomain.value ? selectedDomains.value : [],
     includeDesktop: desktopAvailable.value && includeDesktop.value,
     preRestoreSnapshot: preRestore.value,
     customTarget: targetMode.value === "custom" ? target.value : "",
@@ -129,7 +143,13 @@ async function submit() {
 
           <div class="field-block">
             <div class="field-label">恢复内容</div>
-            <div class="check-row"><span class="check-fixed" aria-hidden="true">✓</span><span><strong>DSH 核心数据</strong><small>必选</small></span></div>
+            <template v-if="multiDomain">
+              <label v-for="part in restoreParts" :key="part.domain" class="check-row" :class="{ disabled: part.status !== 'ready' }">
+                <input v-model="selectedDomains" type="checkbox" :value="part.domain" :disabled="part.status !== 'ready'" />
+                <span><strong>{{ part.label }}</strong><small>{{ part.status === 'ready' ? `${formatBytes(part.size)} · ${part.files} 个文件` : "该域的归档已按保留策略淘汰，无法恢复" }}</small></span>
+              </label>
+            </template>
+            <div v-else class="check-row"><span class="check-fixed" aria-hidden="true">✓</span><span><strong>DSH 核心数据</strong><small>必选</small></span></div>
             <label class="check-row" :class="{ disabled: !desktopAvailable }"><input v-model="includeDesktop" type="checkbox" :disabled="!desktopAvailable" /><span><strong>桌面登录态</strong><small>{{ targetMode === "custom" ? "恢复到其他目录时禁用，不修改系统桌面登录态。" : selected?.desktopIncluded ? "恢复到系统桌面登录态目录。" : "此备份不包含桌面登录态。" }}</small></span></label>
           </div>
 
@@ -137,7 +157,7 @@ async function submit() {
 
           <div class="restore-summary">
             <div class="summary-row"><span>目标目录</span><strong class="mono path-wrap">{{ target || "尚未选择" }}</strong></div>
-            <div class="summary-row"><span>影响内容</span><strong>DSH 核心数据{{ desktopAvailable && includeDesktop ? " + 桌面登录态" : "；不修改系统桌面登录态" }}</strong></div>
+            <div class="summary-row"><span>影响内容</span><strong>{{ selectedLabels }}{{ desktopAvailable && includeDesktop ? " + 桌面登录态" : "；不修改系统桌面登录态" }}</strong></div>
             <div v-if="desktopAvailable && includeDesktop" class="summary-row"><span>桌面目录</span><strong class="mono path-wrap">{{ desktopTarget }}</strong></div>
             <div class="summary-row"><span>覆盖保护</span><strong>{{ preRestore ? "先备份即将覆盖的现有数据" : "未开启；本次覆盖没有预恢复备份保护" }}</strong></div>
           </div>

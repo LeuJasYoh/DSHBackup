@@ -44,7 +44,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 只需要便携版时加 `-SkipInstaller`。不重新编译应用、只重建安装包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\build-installer.ps1 -Version 1.3.1
+powershell -ExecutionPolicy Bypass -File .\packaging\build-installer.ps1 -Version 1.4.0
 ```
 
 ## 开发

@@ -114,11 +114,12 @@ type OnboardingInput struct {
 }
 
 type RestoreRequest struct {
-	SnapshotID         string `json:"snapshotId"`
-	IncludeDesktop     bool   `json:"includeDesktop"`
-	PreRestoreSnapshot bool   `json:"preRestoreSnapshot"`
-	CustomTarget       string `json:"customTarget"`
-	Force              bool   `json:"force"`
+	SnapshotID         string   `json:"snapshotId"`
+	Domains            []string `json:"domains"`
+	IncludeDesktop     bool     `json:"includeDesktop"`
+	PreRestoreSnapshot bool     `json:"preRestoreSnapshot"`
+	CustomTarget       string   `json:"customTarget"`
+	Force              bool     `json:"force"`
 }
 
 type VerifyRequest struct {

@@ -21,6 +21,8 @@ const result = computed(() => store.taskResult);
 const readyCount = computed(() => snapshots.value.filter((item) => item.status === "ready").length);
 const issueCount = computed(() => snapshots.value.length - readyCount.value);
 const sourceDsh = computed(() => boot.value.dsh.sources.find((source) => source.name === "dsh"));
+const archiveCount = computed(() => snapshots.value.reduce((total, snapshot) => total + Math.max(snapshot.parts?.length ?? 1, 1), 0));
+
 function domainSummary(source: SourceInfo | undefined): string {
   const labels: Record<DomainName, string> = { core: "身份配置", sessions: "会话附件", plugins: "插件依赖", runtime: "运行环境" };
   const parts = (source?.domains ?? []).map((stat) => `${labels[stat.domain]} ${formatBytes(stat.bytes)}`);
@@ -30,8 +32,9 @@ function domainSummary(source: SourceInfo | undefined): string {
 const sourceDesktop = computed(() => boot.value.dsh.sources.find((source) => source.name !== "dsh"));
 const latestBlocked = computed(() => latest.value ? restoreBlockReason(latest.value, boot.value.key) : "");
 const nextNote = computed(() => {
-  if (config.value.schedule.kind === "manual") return `手动触发 · 保留 ${config.value.retention.local} 份`;
-  return `${scheduleLabel(config.value.schedule.kind, config.value.schedule.time, config.value.schedule.weekday)} · 保留 ${config.value.retention.local} 份`;
+  // 份数现在按域各自保留，摘要里说清是会话域的份数。
+  if (config.value.schedule.kind === "manual") return `手动触发 · 会话保留 ${config.value.retention.sessions} 份`;
+  return `${scheduleLabel(config.value.schedule.kind, config.value.schedule.time, config.value.schedule.weekday)} · 会话保留 ${config.value.retention.sessions} 份`;
 });
 const nextValue = computed(() => config.value.schedule.kind === "manual" ? "手动" : config.value.schedule.time);
 const resultNextStep = computed(() => {
@@ -112,7 +115,7 @@ const weekly = computed(() => {
     <div class="head">
       <div class="head-main">
         <div class="eyebrow"><i class="pip" :class="issueCount ? 'warn' : (latest ? '' : 'idle')"></i>{{ latest ? `上次备份 ${formatRelative(latest.createdAt)} · ${statusLabel(latest.status)}` : "还没有归档" }}</div>
-        <h1>{{ snapshots.length }} 份本地归档<span v-if="latest">，最近一次 {{ formatBytes(latest.size) }}</span></h1>
+        <h1>{{ snapshots.length }} 份本地快照<span v-if="archiveCount !== snapshots.length">（共 {{ archiveCount }} 份归档）</span><span v-if="latest">，最近一次 {{ formatBytes(latest.size) }}</span></h1>
         <p class="sub">
           备份目录 <span class="mono">{{ config.backupDir }}</span><span class="sep">·</span>{{ nextNote }}<span class="sep">·</span>本地加密{{ config.encryptionLocal ? "已开启" : "未开启" }}
         </p>

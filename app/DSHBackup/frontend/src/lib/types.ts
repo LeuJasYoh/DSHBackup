@@ -25,7 +25,27 @@ export interface ScheduleConfig {
   time: string;
   weekday: number;
 }
-export interface RetentionConfig { local: number; trashDays: number }
+// 每个域各自保留 N 份；local 是旧的全局份数字段，仅用于兼容读取。
+export interface RetentionConfig {
+  local: number;
+  trashDays: number;
+  core: number;
+  sessions: number;
+  plugins: number;
+  runtime: number;
+}
+export interface SnapshotPart {
+  domain: string;
+  label: string;
+  archiveName: string;
+  localPath: string;
+  manifestPath: string;
+  size: number;
+  sha256: string;
+  files: number;
+  bytes: number;
+  status: string;
+}
 export interface Config {
   schemaVersion: number;
   theme: Theme;
@@ -99,7 +119,7 @@ export interface Snapshot {
   desktopIncluded: boolean;
   fileCount: number;
   totalBytes: number;
-  domains?: DomainStat[];
+  parts?: SnapshotPart[];
   compression?: string;
   captureStatus?: string;
   scope?: string[];
@@ -159,6 +179,8 @@ export interface OnboardingInput {
 }
 export interface RestoreRequest {
   snapshotId: string;
+  // 要恢复的域；留空表示恢复该快照里所有就绪的归档。
+  domains: string[];
   includeDesktop: boolean;
   preRestoreSnapshot: boolean;
   customTarget: string;
@@ -171,9 +193,19 @@ export interface MoveToTrashRequest {
   expectedBackupDir: string;
   expectedSha256: string;
 }
+export interface TrashPart {
+  domain?: string;
+  archiveName: string;
+  archiveSize: number;
+  archiveSha256: string;
+  manifestName: string;
+  archiveMissing?: boolean;
+}
 export interface TrashItem {
   snapshotId: string;
   archiveName: string;
+  domain?: string;
+  parts?: TrashPart[];
   size: number;
   movedAt: string;
   expiresAt: string;

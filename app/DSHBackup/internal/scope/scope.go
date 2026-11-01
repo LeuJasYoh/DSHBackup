@@ -96,6 +96,27 @@ func DSH(selection Selection) Excludes {
 	return excludes
 }
 
+// Rule 是下发给 sidecar 的域规则：prefixes 匹配根内相对路径前缀，segments 匹配
+// 任意深度的路径段，按声明顺序首个命中生效，未命中落入 DefaultDomain。
+type Rule struct {
+	Name     Domain
+	Prefixes []string
+	Segments []string
+}
+
+// DefaultDomain 是未命中任何规则时的归属域。
+const DefaultDomain = DomainCore
+
+// DSHRules 给出 .dsh 根的域规则。顺序即优先级：运行环境整棵子树优先，
+// 其次插件依赖（node_modules 可能出现在任意深度），再次会话与附件。
+func DSHRules() []Rule {
+	return []Rule{
+		{Name: DomainRuntime, Prefixes: []string{"dsh-runtimes"}},
+		{Name: DomainPlugins, Segments: []string{"node_modules"}},
+		{Name: DomainSessions, Prefixes: []string{"sessions", "attachments"}},
+	}
+}
+
 // Desktop 返回桌面登录态根要跳过的清单；它没有可取舍的域。
 func Desktop() Excludes {
 	return Excludes{

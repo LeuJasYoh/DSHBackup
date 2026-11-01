@@ -206,7 +206,7 @@ func TestDeleteRequiresMatchingBackupRootIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := manifest.Manifest{
-		SchemaVersion: manifest.SchemaVersion,
+		SchemaVersion: 1,
 		ID:            id,
 		CreatedAt:     "2026-10-30T12:00:00Z",
 		Kind:          manifest.KindManual,
@@ -374,7 +374,7 @@ func seedLocalSnapshot(t *testing.T, app *App) (manifest.Snapshot, string) {
 	}
 	sha := strings.Repeat("c", 64)
 	value := manifest.Manifest{
-		SchemaVersion: manifest.SchemaVersion,
+		SchemaVersion: 1,
 		ID:            id,
 		CreatedAt:     "2026-10-30T14:00:00Z",
 		Kind:          manifest.KindManual,

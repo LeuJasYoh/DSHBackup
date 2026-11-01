@@ -4,6 +4,7 @@ package backup_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -93,9 +94,9 @@ func fixtureConfig(paths apppath.Paths) config.Config {
 	return cfg
 }
 
-func hasDomain(stats []scope.Stat, name scope.Domain) bool {
-	for _, stat := range stats {
-		if stat.Domain == name {
+func hasPart(parts []manifest.Part, name scope.Domain) bool {
+	for _, part := range parts {
+		if part.Domain == string(name) {
 			return true
 		}
 	}
@@ -129,13 +130,24 @@ func TestDomainSelectionSkipsReinstallableData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("默认备份失败：%v", err)
 	}
-	if !hasDomain(result.Manifest.Domains, scope.DomainPlugins) || !hasDomain(result.Manifest.Domains, scope.DomainSessions) {
-		t.Fatalf("清单应记录插件与会话域，实际 %+v", result.Manifest.Domains)
+	if len(result.ArchivePaths) != 3 {
+		t.Fatalf("默认应生成 3 份归档（身份、会话、插件），实际 %d：%v", len(result.ArchivePaths), result.ArchivePaths)
 	}
-	if hasDomain(result.Manifest.Domains, scope.DomainRuntime) {
-		t.Fatalf("默认不应备份运行环境，实际 %+v", result.Manifest.Domains)
+	for _, name := range []scope.Domain{scope.DomainCore, scope.DomainSessions, scope.DomainPlugins} {
+		if !hasPart(result.Snapshot.Parts, name) {
+			t.Fatalf("快照应包含 %s 域：%+v", name, result.Snapshot.Parts)
+		}
 	}
-	joined := archivePaths(t, client, result.ArchivePath)
+	if hasPart(result.Snapshot.Parts, scope.DomainRuntime) {
+		t.Fatalf("默认不应备份运行环境：%+v", result.Snapshot.Parts)
+	}
+	if !strings.Contains(result.ArchivePath, "-core.7z") {
+		t.Fatalf("归档名应带域名：%s", result.ArchivePath)
+	}
+	var joined string
+	for _, archive := range result.ArchivePaths {
+		joined += archivePaths(t, client, archive)
+	}
 	for _, forbidden := range []string{"dsh/dsh-runtimes/", "dsh/storages/session_projcache/", "/__pycache__/"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("归档不应包含 %s（实际：%s）", forbidden, joined)
@@ -160,11 +172,11 @@ func TestDomainSelectionSkipsReinstallableData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("反向备份失败：%v", err)
 	}
-	if hasDomain(second.Manifest.Domains, scope.DomainPlugins) {
-		t.Fatalf("关闭插件依赖后不应有插件域，实际 %+v", second.Manifest.Domains)
+	if hasPart(second.Snapshot.Parts, scope.DomainPlugins) {
+		t.Fatalf("关闭插件依赖后不应有插件域：%+v", second.Snapshot.Parts)
 	}
-	if !hasDomain(second.Manifest.Domains, scope.DomainRuntime) {
-		t.Fatalf("打开运行环境后应有运行环境域，实际 %+v", second.Manifest.Domains)
+	if !hasPart(second.Snapshot.Parts, scope.DomainRuntime) {
+		t.Fatalf("打开运行环境后应有运行环境域：%+v", second.Snapshot.Parts)
 	}
 }
 
@@ -202,5 +214,56 @@ func TestRestoreKeepsOriginalTimestamps(t *testing.T) {
 	}
 	if drift := info.ModTime().Sub(original); drift > time.Second || drift < -time.Second {
 		t.Fatalf("恢复后的修改时间应回到源文件的 %s，实际 %s", original, info.ModTime())
+	}
+}
+
+func TestRestoreOnlySelectedDomains(t *testing.T) {
+	_, paths, manager := setupDomainsFixture(t)
+	cfg := fixtureConfig(paths)
+	saved, err := manager.Backup(context.Background(), backup.BackupInput{
+		TaskID: "subset", Config: cfg, Kind: manifest.KindManual, Force: true,
+	})
+	if err != nil {
+		t.Fatalf("备份失败：%v", err)
+	}
+
+	target := filepath.Join(paths.UserHome, "subset-target")
+	if _, err := manager.Restore(context.Background(), backup.RestoreInput{
+		TaskID: "subset-restore", Config: cfg, Snapshot: saved.Snapshot,
+		Domains: []string{string(scope.DomainCore)}, TargetDSH: target, Force: true,
+	}); err != nil {
+		t.Fatalf("只恢复身份与配置域失败：%v", err)
+	}
+	for _, relative := range []string{".credentials.yaml", filepath.Join("profiles", "desktop", "package.json"), filepath.Join("storages", "workspace.json")} {
+		if _, err := os.Stat(filepath.Join(target, relative)); err != nil {
+			t.Fatalf("core 域的文件没有恢复出来 %s：%v", relative, err)
+		}
+	}
+	for _, relative := range []string{
+		filepath.Join("sessions", "a.json"),
+		filepath.Join("attachments", "c.txt"),
+		filepath.Join("profiles", "desktop", "node_modules", "pkg", "index.js"),
+	} {
+		if _, err := os.Stat(filepath.Join(target, relative)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("未选择的域不该被写入 %s（err=%v）", relative, err)
+		}
+	}
+}
+
+func TestRestoreRejectsMissingDomainSelection(t *testing.T) {
+	_, paths, manager := setupDomainsFixture(t)
+	cfg := fixtureConfig(paths)
+	saved, err := manager.Backup(context.Background(), backup.BackupInput{
+		TaskID: "subset-missing", Config: cfg, Kind: manifest.KindManual, Force: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(paths.UserHome, "missing-target")
+	if _, err := manager.Restore(context.Background(), backup.RestoreInput{
+		TaskID: "subset-missing-restore", Config: cfg, Snapshot: saved.Snapshot,
+		Domains: []string{string(scope.DomainRuntime)}, TargetDSH: target, Force: true,
+	}); err == nil {
+		t.Fatal("请求恢复一个不存在于本快照的域时必须报错，不能静默跳过")
 	}
 }

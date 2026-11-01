@@ -43,7 +43,7 @@ function makeBoot(): Bootstrap {
       backupDir: "D:\\Backups", includeDesktop: false, encryptionLocal: false,
       compression: { level: "store", dictionaryMb: 0, threads: 0, extraArgs: [] },
       schedule: { kind: "manual", time: "03:00", weekday: 1 },
-      retention: { local: 7, trashDays: 7 },
+      retention: { local: 7, trashDays: 7, core: 14, sessions: 7, plugins: 3, runtime: 1 },
       domains: { skipPluginDeps: false, includeRuntime: false },
       preRestoreSnapshot: true, verifyAfterBackup: true, closeBehavior: "ask", lastScheduledAt: "",
     },

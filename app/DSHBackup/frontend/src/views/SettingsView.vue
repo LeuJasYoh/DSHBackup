@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import OptionSelect from "../components/OptionSelect.vue";
 import { api } from "../lib/bridge";
-import { cloneConfig, compressionHint, compressionLevels, compressionShort, configFingerprint, errorMessage, extraArgsError, formatBytes, formatDate, parseExtraArgs, scheduleLabel, validateConfig, weekdayLabel } from "../lib/format";
+import { cloneConfig, compressionHint, compressionLevels, compressionShort, configFingerprint, errorMessage, extraArgsError, formatBytes, formatDate, parseExtraArgs, retentionLabels, scheduleLabel, validateConfig, weekdayLabel } from "../lib/format";
 import { applyTheme } from "../lib/theme";
 import { checkForUpdates, isBusy, openBackupFolder, openDataFolder, openKeysFolder, openLogsFolder, openReleasePage, openRepository, openTrashFolder, pickDirectory, saveConfig, store, trashBytes, trashCount } from "../store";
 import type { Config, DomainName, SettingsSection, Theme } from "../lib/types";
@@ -318,9 +318,16 @@ async function exportDiagnostics() {
   catch (error) { toolFailure.value = errorMessage(error); }
   finally { toolBusy.value = false; }
 }
-function setRetention(delta: number) {
+type KeepField = "core" | "sessions" | "plugins" | "runtime";
+const keepFields: Array<{ field: KeepField; desc: string }> = [
+  { field: "core", desc: "身份与配置很小，多留几份几乎不占空间，能回到任意一次设置变更之前。" },
+  { field: "sessions", desc: "会话与附件每次备份都会变，是归档体积的主要增长来源。" },
+  { field: "plugins", desc: "插件依赖只在装卸时变化，留 3 份足够回到最近的插件状态。" },
+  { field: "runtime", desc: "仅在打开「备份运行环境副本」时生效。" },
+];
+function adjustKeep(field: KeepField, delta: number) {
   if (!draft.value) return;
-  draft.value.retention.local = Math.min(99, Math.max(1, draft.value.retention.local + delta));
+  draft.value.retention[field] = Math.min(99, Math.max(1, draft.value.retention[field] + delta));
 }
 </script>
 
@@ -460,15 +467,17 @@ function setRetention(delta: number) {
 
           <section id="sec-schedule-keep" class="set-sec">
             <h2>保留份数</h2>
-            <div class="setting-row">
+            <div class="setting-desc" style="margin-bottom:10px">按域各自保留：淘汰只看同一个域的旧份数，恢复前快照不计入自动清理。</div>
+            <div v-for="item in keepFields" :key="item.field" class="setting-row">
               <div class="setting-copy">
-                <div class="setting-desc">保留最近 N 份普通备份，更旧的普通备份会被移入回收站；恢复前快照不计入自动清理。</div>
+                <div class="setting-title">{{ retentionLabels[item.field] }}</div>
+                <div class="setting-desc">{{ item.desc }}</div>
               </div>
               <div class="setting-control">
                 <div class="stepper">
-                  <button type="button" aria-label="减少保留份数" @click="setRetention(-1)">−</button>
-                  <input v-model.number="draft.retention.local" type="number" min="1" max="99" aria-label="保留份数" />
-                  <button type="button" aria-label="增加保留份数" @click="setRetention(1)">+</button>
+                  <button type="button" :aria-label="'减少' + retentionLabels[item.field] + '保留份数'" @click="adjustKeep(item.field, -1)">−</button>
+                  <input v-model.number="draft.retention[item.field]" type="number" min="1" max="99" :aria-label="retentionLabels[item.field] + '保留份数'" />
+                  <button type="button" :aria-label="'增加' + retentionLabels[item.field] + '保留份数'" @click="adjustKeep(item.field, 1)">+</button>
                 </div>
               </div>
             </div>

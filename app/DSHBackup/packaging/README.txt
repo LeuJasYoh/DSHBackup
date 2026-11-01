@@ -1,4 +1,4 @@
-DSH Backup 1.3.1 - 便携版 / 安装版
+DSH Backup 1.4.0 - 便携版 / 安装版
 
 DSH Backup 只备份 DSH 的核心数据：登录态、API Key、会话、工作区登记、附件、用量，以及可选的桌面端登录态。
 不备份项目代码、日志和缓存。备份数据只保存在本机，不上传；可选在启动时只读检查 GitHub 发行版，可在设置中关闭。
@@ -11,7 +11,7 @@ DSH Backup 只备份 DSH 的核心数据：登录态、API Key、会话、工作
 3. “立即备份”完成后，归档位于 DSHBackup\backups，另有同名 .manifest.json 记录 SHA-256 和加密信息。
 
 安装版：
-1. 运行 DSHBackup-1.3.1-win64-setup.exe，选择当前用户可写的安装位置；默认是
+1. 运行 DSHBackup-1.4.0-win64-setup.exe，选择当前用户可写的安装位置；默认是
    %LOCALAPPDATA%\Programs\DSHBackup，不请求管理员权限。
 2. 安装程序会拒绝 C:\Program Files、Windows 目录和磁盘根目录，因为这些位置无法安全保存配置和备份。
 3. 可以选择创建桌面快捷方式；开始菜单快捷方式始终创建。卸载时只删除程序文件，data 和 backups 会保留。

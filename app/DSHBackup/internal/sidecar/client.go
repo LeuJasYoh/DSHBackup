@@ -554,32 +554,51 @@ type Progress struct {
 	BytesTotal int64   `json:"bytesTotal"`
 }
 
+// DomainRule 把根内相对路径归入某个备份域；prefixes 匹配路径前缀，
+// segments 匹配任意深度的路径段，按声明顺序首个命中生效。
+type DomainRule struct {
+	Name     string   `json:"name"`
+	Prefixes []string `json:"prefixes"`
+	Segments []string `json:"segments"`
+}
+
 type StageRoot struct {
-	Name          string   `json:"name"`
-	Source        string   `json:"source"`
-	ExcludeTop    []string `json:"excludeTop"`
-	ExcludeRel    []string `json:"excludeRel"`
-	ExcludePrefix []string `json:"excludePrefix"`
-	ExcludeName   []string `json:"excludeName"`
+	Name          string       `json:"name"`
+	Source        string       `json:"source"`
+	ExcludeTop    []string     `json:"excludeTop"`
+	ExcludeRel    []string     `json:"excludeRel"`
+	ExcludePrefix []string     `json:"excludePrefix"`
+	ExcludeName   []string     `json:"excludeName"`
+	DomainRules   []DomainRule `json:"domainRules,omitempty"`
+	DefaultDomain string       `json:"defaultDomain,omitempty"`
 }
 
 type ArchiveEntry struct {
 	Path   string `json:"path"`
 	Size   int64  `json:"size"`
 	Folder bool   `json:"folder"`
+	Domain string `json:"domain"`
+}
+
+// DomainStaging 是某个域在暂存目录里的子树及其统计。
+type DomainStaging struct {
+	Name  string `json:"name"`
+	Files int64  `json:"files"`
+	Bytes int64  `json:"bytes"`
 }
 
 type StageResult struct {
-	Files       int64          `json:"files"`
-	Directories int64          `json:"directories"`
-	Bytes       int64          `json:"bytes"`
-	TotalBytes  int64          `json:"totalBytes"`
-	Hardlinked  int64          `json:"hardlinked"`
-	Skipped     int64          `json:"skipped"`
-	Complete    bool           `json:"complete"`
-	Warnings    []string       `json:"warnings"`
-	Entries     []ArchiveEntry `json:"entries"`
-	StagingDir  string         `json:"stagingDir"`
+	Files       int64           `json:"files"`
+	Directories int64           `json:"directories"`
+	Bytes       int64           `json:"bytes"`
+	TotalBytes  int64           `json:"totalBytes"`
+	Hardlinked  int64           `json:"hardlinked"`
+	Skipped     int64           `json:"skipped"`
+	Complete    bool            `json:"complete"`
+	Warnings    []string        `json:"warnings"`
+	Entries     []ArchiveEntry  `json:"entries"`
+	Domains     []DomainStaging `json:"domains"`
+	StagingDir  string          `json:"stagingDir"`
 }
 
 func (c *Client) Stage(ctx context.Context, taskID, stagingDir string, roots []StageRoot, onEvent func(Progress)) (StageResult, error) {

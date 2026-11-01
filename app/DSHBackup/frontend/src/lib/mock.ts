@@ -20,7 +20,7 @@ const baseConfig: Config = {
   schemaVersion: 1, theme: "system", updateCheck: true, onboardingComplete: params.get("onboarding") !== "1", backupDir: `${root}\\backups`,
   includeDesktop: true, encryptionLocal: false,
   compression: { level: "store", dictionaryMb: 0, threads: 0, extraArgs: [] },
-  schedule: { kind: "manual", time: "03:00", weekday: 1 }, retention: { local: 7, trashDays: 7 },
+  schedule: { kind: "manual", time: "03:00", weekday: 1 }, retention: { local: 7, trashDays: 7, core: 14, sessions: 7, plugins: 3, runtime: 1 },
   domains: { skipPluginDeps: false, includeRuntime: false },
   preRestoreSnapshot: true, verifyAfterBackup: true, closeBehavior: "ask", lastScheduledAt: "",
 };
@@ -29,10 +29,10 @@ function makeSnapshot(id: string, date: Date, config: Config): Snapshot {
     id, createdAt: date.toISOString(), kind: "manual", size: 64.3 * 1024 * 1024, sha256: "a".repeat(64),
     encrypted: config.encryptionLocal, keyId: config.encryptionLocal ? "mock-key-id" : undefined,
     desktopIncluded: config.includeDesktop, fileCount: 68214, totalBytes: 103.2 * 1024 * 1024,
-    domains: [
-      { domain: "core", files: 2923, bytes: 3.9 * 1024 * 1024 },
-      { domain: "sessions", files: 312, bytes: 39.2 * 1024 * 1024 },
-      { domain: "plugins", files: 1357, bytes: 21.0 * 1024 * 1024 },
+    parts: [
+      { domain: "core", label: "身份与配置", archiveName: `dsh-backup-${id}-core.7z`, localPath: `${config.backupDir}\dsh-backup-${id}-core.7z`, manifestPath: `${config.backupDir}\dsh-backup-${id}-core.manifest.json`, size: 1.2 * 1024 * 1024, sha256: "a".repeat(64), files: 2923, bytes: 3.9 * 1024 * 1024, status: "ready" },
+      { domain: "sessions", label: "会话与附件", archiveName: `dsh-backup-${id}-sessions.7z`, localPath: `${config.backupDir}\dsh-backup-${id}-sessions.7z`, manifestPath: `${config.backupDir}\dsh-backup-${id}-sessions.manifest.json`, size: 38.1 * 1024 * 1024, sha256: "b".repeat(64), files: 312, bytes: 39.2 * 1024 * 1024, status: "ready" },
+      { domain: "plugins", label: "插件依赖", archiveName: `dsh-backup-${id}-plugins.7z`, localPath: `${config.backupDir}\dsh-backup-${id}-plugins.7z`, manifestPath: `${config.backupDir}\dsh-backup-${id}-plugins.manifest.json`, size: 25.0 * 1024 * 1024, sha256: "c".repeat(64), files: 1357, bytes: 21.0 * 1024 * 1024, status: "ready" },
     ],
     compression: config.compression.level, captureStatus: "complete", scope: config.includeDesktop ? ["dsh", "desktop-state"] : ["dsh"], status: "ready",
     localPath: `${config.backupDir}\\dsh-backup-${id}.7z`, manifestPath: `${config.backupDir}\\dsh-backup-${id}.manifest.json`,

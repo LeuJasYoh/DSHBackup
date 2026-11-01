@@ -53,12 +53,37 @@ type Schedule struct {
 	Weekday int          `json:"weekday"`
 }
 
+// 每个域的默认保留份数。身份与配置很小可以多留；插件依赖体积最大，且只在
+// 装卸插件时变化，留 3 份足够回到任意一次插件状态。
+const (
+	DefaultKeepCore     = 14
+	DefaultKeepSessions = 7
+	DefaultKeepPlugins  = 3
+	DefaultKeepRuntime  = 1
+)
+
 type Retention struct {
+	// Local 是 1.3.x 及以前的全局份数。现在只作为旧配置的迁移来源，界面上
+	// 不再出现；缺失的分域份数优先取它，再退回默认值。
 	Local int `json:"local"`
 	// TrashDays is how long the trash keeps anything before auto-cleaning.
 	// Zero means the user chose "never"; it is never implied by a missing
 	// value because the default is 7.
 	TrashDays int `json:"trashDays"`
+	Core      int `json:"core"`
+	Sessions  int `json:"sessions"`
+	Plugins   int `json:"plugins"`
+	Runtime   int `json:"runtime"`
+}
+
+// Keeps 返回每个域应保留的份数，顺序与 scope.Names() 一致。
+func (r Retention) Keeps() map[scope.Domain]int {
+	return map[scope.Domain]int{
+		scope.DomainCore:     r.Core,
+		scope.DomainSessions: r.Sessions,
+		scope.DomainPlugins:  r.Plugins,
+		scope.DomainRuntime:  r.Runtime,
+	}
 }
 
 // Domains 记录可取舍的数据域。两个字段的零值就是产品默认：插件依赖进备份、
@@ -113,8 +138,12 @@ func Default(defaultBackupDir string) Config {
 			Weekday: 1,
 		},
 		Retention: Retention{
-			Local:     7,
+			Local:     DefaultKeepSessions,
 			TrashDays: 7,
+			Core:      DefaultKeepCore,
+			Sessions:  DefaultKeepSessions,
+			Plugins:   DefaultKeepPlugins,
+			Runtime:   DefaultKeepRuntime,
 		},
 		PreRestoreSnapshot: true,
 		VerifyAfterBackup:  true,
@@ -194,9 +223,24 @@ func (c *Config) Normalize(defaultBackupDir string) {
 	if c.Schedule.Weekday < 0 || c.Schedule.Weekday > 6 {
 		c.Schedule.Weekday = 1
 	}
-	if c.Retention.Local == 0 {
-		c.Retention.Local = 7
+	if c.Retention.Core == 0 {
+		c.Retention.Core = DefaultKeepCore
 	}
+	if c.Retention.Sessions == 0 {
+		if c.Retention.Local > 0 {
+			c.Retention.Sessions = c.Retention.Local
+		} else {
+			c.Retention.Sessions = DefaultKeepSessions
+		}
+	}
+	if c.Retention.Plugins == 0 {
+		c.Retention.Plugins = DefaultKeepPlugins
+	}
+	if c.Retention.Runtime == 0 {
+		c.Retention.Runtime = DefaultKeepRuntime
+	}
+	// Local 只在旧配置缺份数字段时当迁移来源，之后不再回写：1.3.x 降级读取时
+	// 仍能拿到一个合理的全局份数。
 	if c.Retention.TrashDays < 0 {
 		c.Retention.TrashDays = 7
 	}
@@ -258,8 +302,18 @@ func Validate(cfg Config) error {
 	if _, err := sevenparams.ValidateExtra(cfg.Compression.ExtraArgs); err != nil {
 		return err
 	}
-	if cfg.Retention.Local < 1 || cfg.Retention.Local > 99 {
-		return errors.New("本地保留份数必须在 1 到 99 之间")
+	for _, entry := range []struct {
+		name  string
+		value int
+	}{
+		{"身份与配置", cfg.Retention.Core},
+		{"会话与附件", cfg.Retention.Sessions},
+		{"插件依赖", cfg.Retention.Plugins},
+		{"运行环境", cfg.Retention.Runtime},
+	} {
+		if entry.value < 1 || entry.value > 99 {
+			return fmt.Errorf("%s 的保留份数必须在 1 到 99 之间", entry.name)
+		}
 	}
 	if cfg.Retention.TrashDays < 0 || cfg.Retention.TrashDays > 365 {
 		return errors.New("回收站保留天数必须在 0 到 365 之间（0 表示不自动清理）")

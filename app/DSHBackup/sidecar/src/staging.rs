@@ -11,6 +11,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
+/// 域规则由 Go 的 internal/scope 下发，Rust 只负责按规则落盘，规则本身不在这里复制一份。
+/// `prefixes` 匹配根内相对路径的前缀，`segments` 匹配任意深度的路径段，按声明顺序首个命中生效。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DomainRule {
+    pub name: String,
+    #[serde(default)]
+    pub prefixes: Vec<String>,
+    #[serde(default)]
+    pub segments: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StageRoot {
@@ -27,6 +39,46 @@ pub struct StageRoot {
     /// Directory or file names excluded wherever they appear in the tree.
     #[serde(default)]
     pub exclude_name: Vec<String>,
+    /// 非空时启用按域落盘；未命中任何规则的条目落入 `default_domain`。
+    #[serde(default)]
+    pub domain_rules: Vec<DomainRule>,
+    #[serde(default)]
+    pub default_domain: String,
+}
+
+impl StageRoot {
+    fn domain_of(&self, relative: &Path) -> Option<String> {
+        if self.domain_rules.is_empty() && self.default_domain.is_empty() {
+            return None;
+        }
+        let normalized = relative
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        let segments: Vec<&str> = normalized.split('/').filter(|value| !value.is_empty()).collect();
+        for rule in &self.domain_rules {
+            for prefix in &rule.prefixes {
+                let prefix = prefix.replace('\\', "/").trim_matches('/').to_ascii_lowercase();
+                if prefix.is_empty() {
+                    continue;
+                }
+                if normalized == prefix || normalized.starts_with(&format!("{prefix}/")) {
+                    return Some(rule.name.clone());
+                }
+            }
+            for segment in &rule.segments {
+                let segment = segment.replace('\\', "/").to_ascii_lowercase();
+                if segments.iter().any(|value| *value == segment) {
+                    return Some(rule.name.clone());
+                }
+            }
+        }
+        Some(if self.default_domain.is_empty() {
+            "core".to_string()
+        } else {
+            self.default_domain.clone()
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +91,8 @@ pub struct StageRequest {
 struct PlannedFile {
     source: PathBuf,
     relative: PathBuf,
+    stored: PathBuf,
+    domain: Option<String>,
     size: u64,
     accessed: filetime::FileTime,
     modified: filetime::FileTime,
@@ -47,6 +101,8 @@ struct PlannedFile {
 
 struct PlannedDir {
     relative: PathBuf,
+    stored: PathBuf,
+    domain: Option<String>,
 }
 
 fn slash_path(path: &Path) -> String {
@@ -64,6 +120,15 @@ fn inside_prefix(normalized: &str, prefixes: &HashSet<String>) -> bool {
 
 fn has_named_segment(normalized: &str, names: &HashSet<String>) -> bool {
     normalized.split('/').any(|part| names.contains(part))
+}
+
+/// 域布局把条目放进 `staging/<domain>/<root>/...`；未启用域布局时保持扁平的
+/// `staging/<root>/...`，恢复前快照走的就是后者。
+fn place(domain: &Option<String>, relative: &Path) -> PathBuf {
+    match domain {
+        Some(name) if !name.is_empty() => PathBuf::from(name).join(relative),
+        _ => relative.to_path_buf(),
+    }
 }
 
 /// Restore the source timestamps on the staged copy. 7-Zip records the times it
@@ -219,6 +284,7 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
                 .strip_prefix(&root.source)
                 .map_err(|_| SidecarError::new("无法计算相对路径"))?
                 .to_path_buf();
+            let domain = root.domain_of(&relative);
             let named_relative = if root.name.is_empty() {
                 relative
             } else {
@@ -245,7 +311,9 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
             }
             if meta.is_dir() {
                 dirs.push(PlannedDir {
+                    stored: place(&domain, &named_relative),
                     relative: named_relative,
+                    domain,
                 });
                 continue;
             }
@@ -256,6 +324,8 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
             total_bytes += meta.len();
             files.push(PlannedFile {
                 source: entry.path().to_path_buf(),
+                stored: place(&domain, &named_relative),
+                domain,
                 relative: named_relative,
                 size: meta.len(),
                 accessed: filetime::FileTime::from_last_access_time(&meta),
@@ -285,7 +355,7 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
     let mut last_percent = 0.0f64;
 
     for dir in &dirs {
-        let destination = request.staging_dir.join(&dir.relative);
+        let destination = request.staging_dir.join(&dir.stored);
         if let Err(error) = ensure_dir(&destination) {
             warnings.push(format!(
                 "目录未能暂存：{}（{error}）",
@@ -299,7 +369,7 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
         if token.load(Ordering::Relaxed) {
             return Err(SidecarError::cancelled());
         }
-        let destination = request.staging_dir.join(&file.relative);
+        let destination = request.staging_dir.join(&file.stored);
         match stable_copy(&file.source, &destination, token) {
             Ok(size) if size == file.size => {
                 apply_times(&destination, file);
@@ -363,23 +433,38 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
     }
 
     let mut entries: Vec<Value> = Vec::new();
+    // 先按目录登记域，保证只含空目录的域也会生成一份归档。
+    let mut summary: Vec<(String, u64, u64)> = Vec::new();
+    let mut note_domain = |domain: &Option<String>, files: u64, bytes: u64| {
+        let Some(name) = domain else { return };
+        match summary.iter_mut().find(|(known, _, _)| known == name) {
+            Some((_, count, total)) => {
+                *count += files;
+                *total += bytes;
+            }
+            None => summary.push((name.clone(), files, bytes)),
+        }
+    };
     for dir in &dirs {
-        if request.staging_dir.join(&dir.relative).is_dir() {
+        if request.staging_dir.join(&dir.stored).is_dir() {
             entries.push(json!({
                 "path": slash_path(&dir.relative),
                 "size": 0,
                 "folder": true,
             }));
+            note_domain(&dir.domain, 0, 0);
         }
     }
     for file in &files {
-        let destination = request.staging_dir.join(&file.relative);
+        let destination = request.staging_dir.join(&file.stored);
         if let Ok(meta) = std::fs::metadata(&destination) {
             entries.push(json!({
                 "path": slash_path(&file.relative),
                 "size": meta.len(),
                 "folder": false,
+                "domain": file.domain,
             }));
+            note_domain(&file.domain, 1, meta.len());
         }
     }
     entries.sort_by(|left, right| {
@@ -407,6 +492,10 @@ pub fn stage(request: StageRequest, token: &AtomicBool, emitter: &Emitter) -> Re
         "complete": skipped == 0 && warnings.is_empty(),
         "warnings": warnings,
         "entries": entries,
+        "domains": summary
+            .iter()
+            .map(|(name, count, bytes)| json!({ "name": name, "files": count, "bytes": bytes }))
+            .collect::<Vec<Value>>(),
         "stagingDir": request.staging_dir.to_string_lossy(),
     }))
 }
@@ -588,6 +677,16 @@ mod tests {
             exclude_rel: vec![],
             exclude_prefix: vec![],
             exclude_name: vec![],
+            domain_rules: vec![],
+            default_domain: String::new(),
+        }
+    }
+
+    fn rule(name: &str, prefixes: &[&str], segments: &[&str]) -> DomainRule {
+        DomainRule {
+            name: name.to_string(),
+            prefixes: prefixes.iter().map(|value| value.to_string()).collect(),
+            segments: segments.iter().map(|value| value.to_string()).collect(),
         }
     }
 
@@ -652,6 +751,82 @@ mod tests {
             ],
             "前缀与目录名排除没有只去掉派生数据"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn domain_rules_place_entries_into_per_domain_trees() {
+        let dir = scratch("domains");
+        let source = dir.join("source");
+        let staging = dir.join("staging");
+        for relative in [
+            "profiles/desktop/node_modules/pkg/index.js",
+            "profiles/desktop/package.json",
+            "dsh-runtimes/dsh-primary-runtime/runtime.json",
+            "sessions/a.jsonl",
+        ] {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"x").unwrap();
+        }
+
+        let mut root = dsh_root(&source);
+        root.domain_rules = vec![
+            rule("runtime", &["dsh-runtimes"], &[]),
+            rule("plugins", &[], &["node_modules"]),
+            rule("sessions", &["sessions", "attachments"], &[]),
+        ];
+        root.default_domain = "core".to_string();
+        let result = run_stage(root, &staging);
+
+        // 每个域是一棵独立的 root 子树，压缩时直接把域目录当作暂存根。
+        for expected in [
+            "core/dsh/profiles/desktop/package.json",
+            "sessions/dsh/sessions/a.jsonl",
+            "plugins/dsh/profiles/desktop/node_modules/pkg/index.js",
+            "runtime/dsh/dsh-runtimes/dsh-primary-runtime/runtime.json",
+        ] {
+            assert!(
+                staging.join(expected.replace('/', std::path::MAIN_SEPARATOR_STR)).is_file(),
+                "缺少 {}",
+                expected
+            );
+        }
+        // 归档内路径仍然不带域名前缀，恢复侧的路径语义不变。
+        let mut listed: Vec<String> = result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["folder"].as_bool() == Some(false))
+            .map(|entry| entry["path"].as_str().unwrap_or_default().to_string())
+            .collect();
+        listed.sort();
+        assert_eq!(
+            listed,
+            vec![
+                "dsh/dsh-runtimes/dsh-primary-runtime/runtime.json",
+                "dsh/profiles/desktop/node_modules/pkg/index.js",
+                "dsh/profiles/desktop/package.json",
+                "dsh/sessions/a.jsonl",
+            ]
+        );
+        let domains = result["domains"].as_array().unwrap();
+        assert_eq!(domains.len(), 4, "四个域都应有汇总：{domains:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flat_layout_stays_flat_without_domain_rules() {
+        let dir = scratch("flat");
+        let source = dir.join("source");
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("a.json"), b"x").unwrap();
+
+        let result = run_stage(dsh_root(&source), &staging);
+
+        assert!(staging.join("dsh").join("a.json").is_file());
+        assert!(result["domains"].as_array().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

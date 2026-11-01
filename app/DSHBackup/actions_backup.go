@@ -153,6 +153,7 @@ func (a *App) StartRestore(request RestoreRequest) (string, error) {
 		TaskID:             taskID,
 		Config:             cfg,
 		Snapshot:           snapshot,
+		Domains:            request.Domains,
 		IncludeDesktop:     request.IncludeDesktop,
 		PreRestoreSnapshot: request.PreRestoreSnapshot,
 		TargetDSH:          request.CustomTarget,
@@ -266,7 +267,8 @@ func (a *App) resolveSnapshot(id string) (manifest.Snapshot, error) {
 	}
 	for _, snapshot := range local {
 		if snapshot.ID == id {
-			if snapshot.Status != "ready" {
+			// partial 表示某几域已被按域淘汰，剩下的域仍然可以恢复。
+			if snapshot.Status != "ready" && snapshot.Status != "partial" {
 				return manifest.Snapshot{}, errors.New("本地快照文件缺失或大小不符，无法恢复或验证")
 			}
 			return snapshot, nil

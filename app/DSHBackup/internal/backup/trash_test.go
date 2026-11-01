@@ -26,7 +26,7 @@ func trashFixture(t *testing.T) (apppath.Paths, manifest.Snapshot) {
 		t.Fatal(err)
 	}
 	value := manifest.Manifest{
-		SchemaVersion: manifest.SchemaVersion,
+		SchemaVersion: 1,
 		ID:            id,
 		CreatedAt:     "2026-10-30T12:00:00Z",
 		Kind:          manifest.KindManual,
@@ -294,7 +294,7 @@ func TestApplyLocalRetentionMovesToTrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := manifest.Manifest{
-		SchemaVersion: manifest.SchemaVersion,
+		SchemaVersion: 1,
 		ID:            second.ID,
 		CreatedAt:     "2026-10-30T13:00:00Z",
 		Kind:          manifest.KindManual,
@@ -308,11 +308,11 @@ func TestApplyLocalRetentionMovesToTrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := NewManager(paths, nil, nil, "", "", "test")
-	moved, err := manager.applyLocalRetention(context.Background(), paths.DefaultBackupDir, 1, second.ID, 7)
+	moved, err := manager.applyDomainRetention(context.Background(), paths.DefaultBackupDir, uniformRetention(1), second.ID, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(moved) != 1 || moved[0] != first.ID {
+	if len(moved) != 1 || !strings.HasPrefix(moved[0], first.ID) {
 		t.Fatalf("unexpected retention result: %v", moved)
 	}
 	if _, err := os.Stat(second.LocalPath); err != nil {
@@ -340,7 +340,7 @@ func TestPurgeCanBeDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := manifest.Manifest{
-		SchemaVersion: manifest.SchemaVersion,
+		SchemaVersion: 1,
 		ID:            second.ID,
 		CreatedAt:     "2026-10-30T15:00:00Z",
 		Kind:          manifest.KindManual,

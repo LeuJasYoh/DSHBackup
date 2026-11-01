@@ -6,9 +6,14 @@ import { formatBytes, formatDate, formatRelative, kindShort, restoreBlockReason,
 const props = defineProps<{ snapshots: Snapshot[]; compact?: boolean }>();
 const emit = defineEmits<{ restore: [Snapshot]; verify: [Snapshot]; open: [Snapshot]; deleteLocal: [Snapshot] }>();
 const blocked = (snapshot: Snapshot) => restoreBlockReason(snapshot, store.boot?.key);
-const archiveName = (snapshot: Snapshot) => snapshot.localPath?.split(/[\\/]/).pop() || `dsh-backup-${snapshot.id}.7z`;
+const archiveName = (snapshot: Snapshot) => {
+  if (snapshot.parts && snapshot.parts.length > 1) return `dsh-backup-${snapshot.id}-*.7z`;
+  return snapshot.localPath?.split(/[\\/]/).pop() || `dsh-backup-${snapshot.id}.7z`;
+};
+const partsLine = (snapshot: Snapshot) => (snapshot.parts || []).map((part) => `${part.label} ${formatBytes(part.size)}`).join(" · ");
 const statusVariant = (snapshot: Snapshot) => {
   if (snapshot.status === "ready") return snapshot.captureStatus === "partial" ? "warning" : "success";
+  if (snapshot.status === "partial") return "warning";
   return snapshot.status === "size-mismatch" ? "warning" : "danger";
 };
 const statusText = (snapshot: Snapshot) => snapshot.captureStatus === "partial" ? "采集不完整" : statusLabel(snapshot.status);
@@ -30,10 +35,11 @@ const statusText = (snapshot: Snapshot) => snapshot.captureStatus === "partial" 
         <tr v-for="snapshot in props.snapshots" :key="snapshot.id">
           <td class="archive-cell">
             <div class="file-line">
-              <span class="file-name" :title="snapshot.localPath || snapshot.id">{{ archiveName(snapshot) }}</span>
+              <span class="file-name" :title="snapshot.parts?.map((part) => part.archiveName).join(String.fromCharCode(10)) || snapshot.localPath || snapshot.id">{{ archiveName(snapshot) }}</span>
               <svg v-if="snapshot.encrypted" class="icon file-lock" aria-label="已加密" role="img"><use href="#i-lock"></use></svg>
             </div>
             <div class="file-sub" :title="formatDate(snapshot.createdAt)">{{ formatRelative(snapshot.createdAt) }} · {{ kindShort(snapshot.kind) }}</div>
+            <div v-if="(snapshot.parts?.length || 0) > 1" class="file-sub">{{ partsLine(snapshot) }}</div>
           </td>
           <td>{{ scopeLabel(snapshot) }}</td>
           <td class="size-cell">{{ formatBytes(snapshot.size) }}</td>

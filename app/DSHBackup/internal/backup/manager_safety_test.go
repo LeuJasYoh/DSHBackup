@@ -182,7 +182,11 @@ func TestSafetyCopyFailureKeepsExistingDestination(t *testing.T) {
 			if progress.Phase != "install" || locked {
 				return
 			}
-			source := filepath.Join(paths.TempDir, "restore-copy-failure-restore", "extract", "dsh", "large.bin")
+			source, found := findExtracted(paths.TempDir, "restore-copy-failure-restore", "extract", "large.bin")
+			if !found {
+				t.Errorf("open extracted fixture: 解压树里找不到 large.bin")
+				return
+			}
 			pointer, _ := windows.UTF16PtrFromString(source)
 			var openErr error
 			handle, openErr = windows.CreateFile(pointer, windows.GENERIC_READ|windows.GENERIC_WRITE,
@@ -227,10 +231,15 @@ func TestSafetyProtectionSnapshotRejectsOmittedFile(t *testing.T) {
 		TaskID: "protection-restore", Config: cfg, Snapshot: saved.Snapshot,
 		PreRestoreSnapshot: true, Force: true,
 		OnProgress: func(progress backup.Progress) {
-			if progress.Phase != "snapshot" || progress.Message != "恢复前快照：启动 7z 压缩" || locked {
+			if progress.Phase != "snapshot" || progress.Message != "恢复前快照：压缩 快照内容" || locked {
 				return
 			}
 			path := filepath.Join(paths.TempDir, "protection-restore-pre", "staging", "dsh", "payload.txt")
+			if _, statErr := os.Stat(path); statErr != nil {
+				if located, found := findExtracted(paths.TempDir, "protection-restore-pre", "staging", "payload.txt"); found {
+					path = located
+				}
+			}
 			pointer, _ := windows.UTF16PtrFromString(path)
 			var openErr error
 			handle, openErr = windows.CreateFile(pointer, windows.GENERIC_READ, 0, nil,
@@ -253,6 +262,22 @@ func TestSafetyProtectionSnapshotRejectsOmittedFile(t *testing.T) {
 	if err != nil || string(content) != "irreplaceable-current" {
 		t.Fatalf("restore overwrote live data despite incomplete protection: %q %v", content, err)
 	}
+}
+
+// findExtracted 在解压树里找同名文件，避免测试依赖"域子目录"这一层具体布局。
+func findExtracted(tempDir, taskDir, subDir, name string) (string, bool) {
+	root := filepath.Join(tempDir, taskDir, subDir)
+	var found string
+	_ = filepath.WalkDir(root, func(current string, entry os.DirEntry, err error) error {
+		if err != nil || found != "" {
+			return nil
+		}
+		if !entry.IsDir() && entry.Name() == name {
+			found = current
+		}
+		return nil
+	})
+	return found, found != ""
 }
 
 func TestSafetyEmptyCoreDirectoryRoundTrip(t *testing.T) {

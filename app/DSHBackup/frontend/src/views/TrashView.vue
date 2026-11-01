@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { askDeleteTrashItem, askEmptyTrash, openTrashFolder, restoreTrashItem, store, trashBytes, trashCount, trashItems } from "../store";
-import { formatBytes, formatDate, formatRelative, kindShort } from "../lib/format";
+import { formatBytes, formatDate, formatRelative, kindShort, retentionLabels } from "../lib/format";
 import type { TrashItem } from "../lib/types";
 
 const items = computed(() => [...trashItems.value].sort((a, b) => Date.parse(b.movedAt) - Date.parse(a.movedAt)));
@@ -53,7 +53,7 @@ const displayName = (item: TrashItem) => item.archiveName || `dsh-backup-${item.
                   <span class="file-name" :title="displayName(item)">{{ displayName(item) }}</span>
                   <svg v-if="item.encrypted" class="icon file-lock" aria-label="已加密" role="img"><use href="#i-lock"></use></svg>
                 </div>
-                <div class="file-sub" :title="formatDate(item.movedAt)">{{ formatRelative(item.movedAt) }} · {{ kindShort(item.kind) }}</div>
+                <div class="file-sub" :title="formatDate(item.movedAt)">{{ formatRelative(item.movedAt) }} · {{ kindShort(item.kind) }}{{ item.domain ? ` · 仅 ${retentionLabels[item.domain as keyof typeof retentionLabels] ?? item.domain}` : "" }}</div>
               </td>
               <td>
                 <span class="status-pill" :class="item.reason === 'retention' ? 'warning' : ''"><i></i>{{ reasonLabel(item) }}</span>

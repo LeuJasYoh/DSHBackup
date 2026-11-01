@@ -1,4 +1,5 @@
-import type { CompressionLevel, Config, KeyInfo, Snapshot, TaskContext } from "./types";
+import type {
+  SnapshotPart, CompressionLevel, Config, KeyInfo, Snapshot, TaskContext } from "./types";
 
 export function formatBytes(value: number | undefined | null): string {
   if (!value || value <= 0) return "0 B";
@@ -84,9 +85,14 @@ export function scopeLabel(snapshot?: Snapshot): string {
   }
   return snapshot.desktopIncluded ? "DSH + 桌面" : "仅 DSH";
 }
+export const retentionLabels: Record<"core" | "sessions" | "plugins" | "runtime", string> = {
+  core: "身份与配置", sessions: "会话与附件", plugins: "插件依赖", runtime: "运行环境副本",
+};
+
 export function statusLabel(status: string): string {
   if (status === "ready") return "归档可用";
   if (status === "missing") return "归档缺失";
+  if (status === "partial") return "部分域可用";
   if (status === "size-mismatch") return "大小不符";
   if (status === "conflict") return "清单冲突";
   return status || "状态未知";
@@ -94,9 +100,22 @@ export function statusLabel(status: string): string {
 export function archiveBlockReason(snapshot?: Snapshot): string {
   if (!snapshot) return "请选择备份";
   if (snapshot.status === "missing" || !snapshot.localPath) return "归档文件缺失，请找回原归档后刷新列表。";
+  if (!snapshotDomains(snapshot).some((part) => part.status === "ready")) return "该快照没有可用的归档。";
   if (snapshot.status === "size-mismatch") return "归档大小与清单不符，请找回完整归档；不能恢复此备份。";
-  if (snapshot.status !== "ready") return "归档状态异常，请检查文件并刷新列表。";
+  // partial 只表示某些域被按域淘汰了，剩下的域照样可以恢复。
+  if (snapshot.status !== "ready" && snapshot.status !== "partial") return "归档状态异常，请检查文件并刷新列表。";
   return "";
+}
+
+// snapshotDomains 列出这份快照实际包含的域，兼容只有一份归档的旧快照。
+export function snapshotDomains(snapshot?: Snapshot): SnapshotPart[] {
+  if (!snapshot) return [];
+  if (snapshot.parts?.length) return snapshot.parts;
+  return [{
+    domain: "", label: "整份归档", archiveName: snapshot.localPath?.split(/[\\/]/).pop() || `dsh-backup-${snapshot.id}.7z`,
+    localPath: snapshot.localPath || "", manifestPath: snapshot.manifestPath || "", size: snapshot.size,
+    sha256: snapshot.sha256, files: snapshot.fileCount, bytes: snapshot.totalBytes, status: snapshot.status,
+  }];
 }
 export function restoreBlockReason(snapshot?: Snapshot, key?: KeyInfo): string {
   const archiveError = archiveBlockReason(snapshot);
@@ -180,7 +199,10 @@ export function validateConfig(config: Config, extraArgsText: string): string {
   if (!["system", "dark", "light"].includes(config.theme)) return "请选择有效的界面主题";
   if (!["ask", "exit", "tray"].includes(config.closeBehavior)) return "请选择有效的关闭行为";
   if (!compressionLevels.includes(config.compression.level)) return "请选择有效的压缩档位";
-  if (!Number.isInteger(config.retention.local) || config.retention.local < 1 || config.retention.local > 99) return "保留份数必须是 1 到 99 的整数";
+  for (const field of ["core", "sessions", "plugins", "runtime"] as const) {
+    const value = config.retention[field];
+    if (!Number.isInteger(value) || value < 1 || value > 99) return `${retentionLabels[field]} 的保留份数必须是 1 到 99 的整数`;
+  }
   if (!Number.isInteger(config.retention.trashDays) || config.retention.trashDays < 0 || config.retention.trashDays > 365) return "回收站保留天数必须在 0 到 365 之间（0 表示不自动清理）";
   if (config.schedule.kind !== "manual" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(config.schedule.time)) return "计划时间格式必须为 HH:MM";
   if (!Number.isInteger(config.schedule.weekday) || config.schedule.weekday < 0 || config.schedule.weekday > 6) return "请选择有效的星期";

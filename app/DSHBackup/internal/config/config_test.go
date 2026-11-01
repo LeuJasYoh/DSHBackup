@@ -235,11 +235,31 @@ func TestLegacyConfigLoadsAndSavesLocalFields(t *testing.T) {
 				if err := json.Unmarshal(saved["retention"], &retention); err != nil {
 					t.Fatal(err)
 				}
-				var local, trashDays int
-				_ = json.Unmarshal(retention["local"], &local)
-				_ = json.Unmarshal(retention["trashDays"], &trashDays)
-				if len(retention) != 2 || local != want.Retention.Local || trashDays != 7 {
-					t.Fatalf("unexpected retention: %v", retention)
+				// 分域份数与回收站天数一起写在 retention 里；local 只作为旧版本
+				// 降级读取的兼容字段保留。
+				expected := map[string]int{
+					"local":     want.Retention.Local,
+					"trashDays": 7,
+					"core":      want.Retention.Core,
+					"sessions":  want.Retention.Sessions,
+					"plugins":   want.Retention.Plugins,
+					"runtime":   want.Retention.Runtime,
+				}
+				if len(retention) != len(expected) {
+					t.Fatalf("unexpected retention keys: %v", retention)
+				}
+				for field, wantValue := range expected {
+					var got int
+					raw, exists := retention[field]
+					if !exists {
+						t.Fatalf("retention 缺少字段 %s", field)
+					}
+					if err := json.Unmarshal(raw, &got); err != nil {
+						t.Fatal(err)
+					}
+					if got != wantValue {
+						t.Fatalf("retention.%s = %d，期望 %d", field, got, wantValue)
+					}
 				}
 				reloaded, err := Load(path, "unused")
 				if err != nil || !reflect.DeepEqual(reloaded, want) {

@@ -822,3 +822,36 @@ Git-for-Windows 装进 profile（392 MiB）。因此本轮的修法是"按能否
 3. 归档级 `domains` 与恢复确认框联动：勾选子集恢复时提示"运行环境将在首次使用 Office 技能时本地重建"。
 
 验收命令与基线相同（第 12 节）。本节的 UI 改动**未在应用内点击验证**，只过了 `vue-tsc` 与 `vitest`。
+
+---
+
+## 17. R10 一快照多归档与按域保留（2026-11-01 续）
+
+16.4 里的第 1 项落地。默认配置下的一份快照从 1 个文件变成 3-4 个文件。
+
+### 17.1 落地内容
+
+| 层 | 改动 |
+| --- | --- |
+| sidecar | `StageRoot.domainRules/defaultDomain`：按域把条目放进 `staging/<域>/<根>/...`；域汇总包含**只含空目录的域**，否则空的 `sessions/` 会整域消失。规则表仍由 Go 的 `internal/scope` 下发 |
+| 清单 | `SchemaVersion` 1 → 2；新增 `Manifest.Domain` 与 `ArchiveName/Scan/Validate` 的多归档命名；`Scan` 先把 `(ID, 域)` 归组再按 ID 聚合成一个 `Snapshot`，`Parts[]` 携带每份的体积、文件数与状态 |
+| 状态语义 | 全部域就绪 = `ready`；有域清单在但归档缺失 = `partial`（仍可恢复剩下的域）；一份都不剩 = `missing`；同 ID 各份的 `CreatedAt/Kind/AppVersion/CaptureStatus` 不一致 → `conflict` |
+| 备份 | 逐域压缩→校验→落盘；任一份失败就把本次已落盘的归档与清单一起删掉，保证"快照要么完整要么不存在"；每份归档使用独立随机密码 |
+| 保留 | `retention` 增加 `core/sessions/plugins/runtime` 四个份数（默认 14/7/3/1），旧配置的全局 `local` 作为会话域初值；淘汰按域移入回收站 |
+| 回收站 | `TrashMeta.Parts[]` + `Domain`；按域淘汰的条目目录名是 `<id>-<域>`；别名单清一并记录、一并移回，不留残渣；只丢部分域的条目标为不可恢复 |
+| 恢复 | `RestoreRequest.domains` 选择要恢复的域；各域分别解压到自己的子目录后合并安装到同一目标；缺域直接报错而不是静默半恢复 |
+| 界面 | 设置页「保留份数」变成四行按域步进器；恢复弹窗出现"恢复内容"多选；快照列表与回收站列表显示域与体积 |
+
+### 17.2 验收与实测
+
+- Go 全量、`cargo test`（14 例）、`vue-tsc`、`vitest` 全绿；集成测试新增"3 份归档、无运行环境域"、
+  "反向开关"、"按域淘汰只动插件域"、"恢复后 mtime 回到源值"。
+- 真机只读核对：`DSHBACKUP_REAL_SCAN=1 go test . -run RealHomeDomainPreview` 输出默认配置下
+  计入 566.6 MiB / 10,409 文件，跳过 276.5 MiB / 6,444 文件。
+
+### 17.3 还剩
+
+1. `sessions` 域内容寻址（P2）：按文件去重与增量，能把稳态从 ~3.9 GiB 压到 ~0.6-0.9 GiB，
+   并消掉 `@dsh-ops/bash-win32-x64` 里 65.8 MiB 的硬链接重复计入。
+2. 按域恢复的**跨版本警告**：v2 之前生成的 v1 快照仍是单归档，混用列表时要说清哪几份来自旧格式。
+3. `build.ps1` 产出 1.4.0 的 ZIP 与安装包、`SHA256SUMS.txt`、release notes、tag 与 GitHub Release。
