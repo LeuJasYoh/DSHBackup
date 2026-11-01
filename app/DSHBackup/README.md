@@ -1,7 +1,7 @@
 # DSH Backup
 
 Windows 本地 DSH 核心数据备份工具，提供便携 ZIP 和 NSIS 安装包。备份整个 `.dsh` 目录（凭据、用量、登录态与配置、会话、附件、角色与语音），
-只排除 `logs`、`cache`、`electron-user-data`；外加可选的桌面登录态，不读取项目代码。
+按能否重新生成划分四个备份域：`core` 身份与配置与 `sessions` 会话附件恒定备份，`plugins`（`node_modules`）默认备份可关闭，`runtime`（`dsh-runtimes`，应用从自己目录复制进 home 的运行环境）默认不备份；恒定跳过 `logs`、`cache`、`storages/session_projcache`、`__pycache__` 与 `electron-user-data`；外加可选的桌面登录态，不读取项目代码。
 
 - 设计文档：`../../DESIGN.md`
 - 便携目录：`../../dist/DSHBackup/`

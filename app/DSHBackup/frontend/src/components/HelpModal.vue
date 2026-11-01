@@ -102,8 +102,8 @@ onUnmounted(() => doc.value?.removeEventListener("scroll", onScroll));
 
           <section id="help-scope">
             <h3>备份范围</h3>
-            <p>核心数据是 <span class="mono">%USERPROFILE%\.dsh</span>（跳过 logs、cache 和 electron 用户数据）；桌面登录态可选，包含 Cookies、Local Storage 和窗口偏好。</p>
-            <p>不读取项目代码、工作区和崩溃转储。项目代码请用 Git 或其他工具单独备份。</p>
+            <p>核心数据是 <span class="mono">%USERPROFILE%\.dsh</span>，按能否重新生成划分：身份与配置（凭据、插件声明与状态、用量账本、工作区登记）和会话与附件恒定备份；插件依赖 <span class="mono">node_modules</span> 默认备份、可关闭，关闭后恢复需联网由 pnpm 重建；运行环境副本 <span class="mono">dsh-runtimes</span> 默认不备份，首次使用 Office 类技能时应用会从自己的安装目录就地重新复制，不需要网络。</p>
+            <p>日志、缓存、投影缓存与会话请求的图片变体始终跳过；桌面登录态可选，包含 Cookies、Local Storage 和窗口偏好。不读取项目代码、工作区和崩溃转储。项目代码请用 Git 或其他工具单独备份。</p>
           </section>
 
           <section id="help-compress">
@@ -160,7 +160,7 @@ onUnmounted(() => doc.value?.removeEventListener("scroll", onScroll));
 
           <section id="help-limits">
             <h3>已知限制</h3>
-            <p>不备份项目代码，不做增量/去重，不保存自定义 ACL，不提供代码签名或 VSS。恢复逐文件提交，不是整树事务。桌面 Cookie 受 Windows 用户加密限制，换机可能需要重新登录。1.0.x 的云端功能已在 1.1.0 移除，旧配置会自动迁移为纯本地。</p>
+            <p>不备份项目代码，不做增量/去重（可取舍的备份域只决定一份快照包含哪些数据，保留份数仍是全局一个数），不保存自定义 ACL，不提供代码签名或 VSS。恢复逐文件提交，不是整树事务。桌面 Cookie 受 Windows 用户加密限制，换机可能需要重新登录。1.0.x 的云端功能已在 1.1.0 移除，旧配置会自动迁移为纯本地。</p>
           </section>
 
           <section id="help-update">
